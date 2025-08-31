@@ -11,18 +11,17 @@ import {
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { postService } from '@/lib/supabase';
+import { postService, authService, supabase } from '@/lib/supabase';
 
 interface PostHistoryItem {
   id: string;
   title: string;
-  menuName: string;
-  comment: string;
-  shootingDate: Date;
-  createdAt: Date;
-  mediaCount: number;
-  firstMediaUri: string;
-  isVideo: boolean;
+  menu_name: string;
+  media_url: string;
+  is_video: boolean;
+  likes_count: number;
+  created_at: string;
+  user_id: string;
 }
 
 export default function HistoryScreen() {
@@ -36,50 +35,32 @@ export default function HistoryScreen() {
 
   const loadPosts = async () => {
     try {
-      // TODO: Supabaseから実際のデータを取得
-      // const userPosts = await postService.getUserPosts('current-user-id');
+      // 現在のユーザーを取得
+      const { data: { user } } = await authService.getCurrentUser();
       
-      // 現在はダミーデータ
-    const dummyPosts: PostHistoryItem[] = [
-      {
-        id: '1',
-        title: '本日のおすすめパスタ',
-        menuName: 'カルボナーラ',
-        comment: '新鮮な卵とチーズを使った特製カルボナーラです。',
-        shootingDate: new Date('2024-01-15'),
-        createdAt: new Date('2024-01-15T10:30:00'),
-        mediaCount: 3,
-        firstMediaUri: 'https://via.placeholder.com/300x300/FFB6C1/000000?text=Pasta',
-        isVideo: false,
-      },
-      {
-        id: '2',
-        title: '季節限定デザート',
-        menuName: 'いちごタルト',
-        comment: '旬のいちごをたっぷり使ったタルトです。',
-        shootingDate: new Date('2024-01-14'),
-        createdAt: new Date('2024-01-14T15:20:00'),
-        mediaCount: 2,
-        firstMediaUri: 'https://via.placeholder.com/300x300/FFB6C1/000000?text=Tart',
-        isVideo: false,
-      },
-      {
-        id: '3',
-        title: 'ランチセット紹介',
-        menuName: 'ハンバーガーセット',
-        comment: '人気のハンバーガーとポテトのセットです。',
-        shootingDate: new Date('2024-01-13'),
-        createdAt: new Date('2024-01-13T12:00:00'),
-        mediaCount: 1,
-        firstMediaUri: 'https://via.placeholder.com/300x300/87CEEB/000000?text=Video',
-        isVideo: true,
-      },
-    ];
+      if (!user) {
+        // ユーザーがログインしていない場合はログイン画面へリダイレクト
+        router.replace('/login');
+        return;
+      }
 
-      setPosts(dummyPosts);
+      // Supabaseからpostsテーブルのデータを取得
+      const { data, error } = await supabase
+        .from('posts')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        throw error;
+      }
+
+      // データが取得できた場合は設定、なければ空配列
+      setPosts(data || []);
     } catch (error) {
       console.error('Error loading posts:', error);
       Alert.alert('エラー', '投稿データの読み込みに失敗しました。');
+      // エラーが発生した場合も空配列を設定
+      setPosts([]);
     }
   };
 
