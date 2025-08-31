@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { authService, userService } from '../lib/supabase';
 
 export default function LoginScreen() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -71,32 +72,90 @@ export default function LoginScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!validateForm()) return;
+    console.log('=== Login/Signup attempt started ===');
+    console.log('Mode:', isSignUp ? 'SignUp' : 'SignIn');
+    console.log('Email:', formData.email);
+    
+    if (!validateForm()) {
+      console.log('Form validation failed');
+      return;
+    }
 
     setLoading(true);
 
     try {
-      // TODO: 実際の認証処理を実装
       if (isSignUp) {
+        console.log('Starting signup process...');
+        // ユーザー名の重複チェック
+        const isUsernameAvailable = await userService.checkUsernameAvailability(formData.username);
+        if (!isUsernameAvailable) {
+          Alert.alert('入力エラー', 'このユーザー名は既に使用されています。');
+          setLoading(false);
+          return;
+        }
+
         // サインアップ処理
-        console.log('Sign up:', formData);
+        console.log('Calling authService.signUp...');
+        const result = await authService.signUp(
+          formData.email, 
+          formData.password,
+          {
+            username: formData.username,
+            display_name: formData.displayName,
+          }
+        );
+        console.log('SignUp result:', result);
+
         Alert.alert(
           'アカウント作成完了',
-          'アカウントが正常に作成されました。',
-          [{ text: 'OK', onPress: () => router.replace('/(tabs)') }]
+          'アカウントが正常に作成されました。\n\nメールアドレス宛に確認メールを送信しました。メールに記載されているリンクをクリックして認証を完了してから、ログインしてください。',
+          [{ 
+            text: 'OK', 
+            onPress: () => {
+              console.log('Switching to login mode...');
+              // ログインモードに切り替え
+              setIsSignUp(false);
+              // フォームをクリア
+              setFormData({
+                email: formData.email, // メールアドレスは残す
+                password: '',
+                confirmPassword: '',
+                displayName: '',
+                username: '',
+              });
+            }
+          }]
         );
       } else {
         // ログイン処理
-        console.log('Login:', { email: formData.email, password: formData.password });
+        console.log('Starting signin process...');
+        const result = await authService.signIn(formData.email, formData.password);
+        console.log('SignIn result:', result);
+        
         Alert.alert(
           'ログイン成功',
-          'ログインしました。',
-          [{ text: 'OK', onPress: () => router.replace('/(tabs)') }]
+          'ログインしました。'
         );
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Auth error:', error);
-      Alert.alert('エラー', '認証に失敗しました。もう一度お試しください。');
+      
+      // Supabaseエラーメッセージの日本語化
+      let errorMessage = '認証に失敗しました。もう一度お試しください。';
+      
+      if (error.message?.includes('Invalid login credentials')) {
+        errorMessage = 'メールアドレスまたはパスワードが正しくありません。';
+      } else if (error.message?.includes('User already registered')) {
+        errorMessage = 'このメールアドレスは既に登録されています。';
+      } else if (error.message?.includes('Password should be')) {
+        errorMessage = 'パスワードは6文字以上で入力してください。';
+      } else if (error.message?.includes('Unable to validate email address')) {
+        errorMessage = '正しいメールアドレスを入力してください。';
+      } else if (error.message?.includes('Email not confirmed')) {
+        errorMessage = 'メールアドレスが確認されていません。送信されたメールから認証を完了してからログインしてください。';
+      }
+      
+      Alert.alert('エラー', errorMessage);
     } finally {
       setLoading(false);
     }
