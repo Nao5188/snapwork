@@ -20,6 +20,8 @@ interface PostHistoryItem {
   media_url: string;
   is_video: boolean;
   likes_count: number;
+  categories?: string;
+  description?: string;
   created_at: string;
   user_id: string;
 }
@@ -39,10 +41,13 @@ export default function HistoryScreen() {
       const { data: { user } } = await authService.getCurrentUser();
       
       if (!user) {
+        console.log('No user found, redirecting to login');
         // ユーザーがログインしていない場合はログイン画面へリダイレクト
         router.replace('/login');
         return;
       }
+
+      console.log('Loading posts for user:', user.id);
 
       // Supabaseからpostsテーブルのデータを取得
       const { data, error } = await supabase
@@ -51,9 +56,11 @@ export default function HistoryScreen() {
         .order('created_at', { ascending: false });
 
       if (error) {
+        console.error('Supabase query error:', error);
         throw error;
       }
 
+      console.log('Posts loaded:', data?.length || 0, 'posts');
       // データが取得できた場合は設定、なければ空配列
       setPosts(data || []);
     } catch (error) {
@@ -113,67 +120,69 @@ export default function HistoryScreen() {
     );
   };
 
-  const renderPostItem = ({ item }: { item: PostHistoryItem }) => (
-    <TouchableOpacity 
-      style={styles.postItem}
-      onPress={() => Alert.alert('ポスト詳細', `タイトル: ${item.title}\nメニュー: ${item.menuName}`)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.postImageContainer}>
-        <Image
-          source={{ uri: item.firstMediaUri }}
-          style={styles.postImage}
-          contentFit="cover"
-        />
-        {item.isVideo && (
-          <View style={styles.videoIndicator}>
-            <Ionicons name="play" size={16} color="white" />
-          </View>
-        )}
-        {item.mediaCount > 1 && (
-          <View style={styles.mediaCountBadge}>
-            <Ionicons name="copy-outline" size={12} color="white" />
-            <Text style={styles.mediaCountText}>{item.mediaCount}</Text>
-          </View>
-        )}
-      </View>
-      
-      <View style={styles.postContent}>
-        <View style={styles.postHeader}>
-          <Text style={styles.postTitle} numberOfLines={1}>{item.title}</Text>
-          <Text style={styles.postDate}>
-            {formatDate(item.shootingDate)} {formatTime(item.createdAt)}
-          </Text>
+  const renderPostItem = ({ item }: { item: PostHistoryItem }) => {
+    const createdDate = new Date(item.created_at);
+    
+    return (
+      <TouchableOpacity 
+        style={styles.postItem}
+        onPress={() => Alert.alert('ポスト詳細', `タイトル: ${item.title}\nメニュー: ${item.menu_name}`)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.postImageContainer}>
+          <Image
+            source={{ uri: item.media_url }}
+            style={styles.postImage}
+            contentFit="cover"
+          />
+          {item.is_video && (
+            <View style={styles.videoIndicator}>
+              <Ionicons name="play" size={16} color="white" />
+            </View>
+          )}
         </View>
         
-        <Text style={styles.menuName}>{item.menuName}</Text>
-        
-        {item.comment ? (
-          <Text style={styles.postComment} numberOfLines={2}>
-            {item.comment}
-          </Text>
-        ) : null}
-        
-        <View style={styles.postActions}>
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => handleEditPost(item)}
-          >
-            <Ionicons name="create-outline" size={16} color="#666" />
-            <Text style={styles.actionText}>編集</Text>
-          </TouchableOpacity>
+        <View style={styles.postContent}>
+          <View style={styles.postHeader}>
+            <Text style={styles.postTitle} numberOfLines={1}>{item.title}</Text>
+            <Text style={styles.postDate}>
+              {formatDate(createdDate)} {formatTime(createdDate)}
+            </Text>
+          </View>
           
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => handleDeletePost(item)}
-          >
-            <Ionicons name="trash-outline" size={16} color="#ff4444" />
-            <Text style={[styles.actionText, { color: '#ff4444' }]}>削除</Text>
-          </TouchableOpacity>
+          <Text style={styles.menuName}>{item.menu_name}</Text>
+          
+          {item.categories && (
+            <View style={styles.categoriesContainer}>
+              {item.categories.split(',').map((category, index) => (
+                <View key={index} style={styles.categoryTag}>
+                  <Text style={styles.categoryText}>{category.trim()}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+          
+          <View style={styles.postActions}>
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => handleEditPost(item)}
+            >
+              <Ionicons name="create-outline" size={16} color="#666" />
+              <Text style={styles.actionText}>編集</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.actionButton}
+              onPress={() => handleDeletePost(item)}
+            >
+              <Ionicons name="trash-outline" size={16} color="#ff4444" />
+              <Text style={[styles.actionText, { color: '#ff4444' }]}>削除</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    </TouchableOpacity>
-  );
+      </TouchableOpacity>
+    );
+  };
 
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
@@ -331,6 +340,25 @@ const styles = StyleSheet.create({
     color: '#0095f6',
     fontWeight: '600',
     marginBottom: 8,
+  },
+  categoriesContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginBottom: 8,
+  },
+  categoryTag: {
+    backgroundColor: '#f0f8ff',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#d1e7ff',
+  },
+  categoryText: {
+    fontSize: 12,
+    color: '#0066cc',
+    fontWeight: '500',
   },
   postComment: {
     fontSize: 14,

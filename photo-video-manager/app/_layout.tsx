@@ -35,8 +35,8 @@ export default function RootLayout() {
       setIsAuthenticated(!!session?.user);
       
       if (event === 'SIGNED_IN' && session?.user) {
-        console.log('Navigating to tabs...');
-        router.replace('/(tabs)');
+        console.log('Navigating to history tab...');
+        router.replace('/(tabs)/history');
       } else if (event === 'SIGNED_OUT') {
         console.log('Navigating to login...');
         router.replace('/login');

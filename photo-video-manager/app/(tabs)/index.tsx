@@ -5,6 +5,7 @@ import { Video } from 'expo-av';
 import * as MediaLibrary from 'expo-media-library';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { postService, authService } from '@/lib/supabase';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -23,15 +24,92 @@ export default function CameraScreen() {
   }, []);
 
   const getCameraPermissions = async () => {
-    const cameraPermission = await Camera.requestCameraPermissionsAsync();
-    const audioPermission = await Camera.requestMicrophonePermissionsAsync();
-    const mediaLibraryPermission = await MediaLibrary.requestPermissionsAsync();
-    
-    setHasPermission(
-      cameraPermission.status === 'granted' && 
-      audioPermission.status === 'granted' && 
-      mediaLibraryPermission.status === 'granted'
-    );
+    try {
+      console.log('Platform check - requesting permissions...');
+      console.log('Navigator.mediaDevices available:', !!navigator.mediaDevices);
+      
+      // Web環境での直接的な権限チェック
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+        try {
+          console.log('Attempting direct getUserMedia check...');
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+          });
+          
+          // ストリームを即座に停止
+          stream.getTracks().forEach(track => track.stop());
+          console.log('Direct getUserMedia successful - setting permission to true');
+          setHasPermission(true);
+          return;
+        } catch (directError) {
+          console.error('Direct getUserMedia failed:', directError);
+        }
+      }
+      
+      console.log('Falling back to Expo Camera API...');
+      const cameraPermission = await Camera.requestCameraPermissionsAsync();
+      console.log('Camera permission:', cameraPermission);
+      
+      const audioPermission = await Camera.requestMicrophonePermissionsAsync();
+      console.log('Microphone permission:', audioPermission);
+      
+      // Web環境ではMediaLibraryは不要
+      const mediaLibraryPermission = typeof navigator !== 'undefined' 
+        ? { status: 'granted' } 
+        : await MediaLibrary.requestPermissionsAsync();
+      console.log('Media library permission:', mediaLibraryPermission);
+      
+      const allGranted = cameraPermission.status === 'granted' && 
+                        audioPermission.status === 'granted' && 
+                        mediaLibraryPermission.status === 'granted';
+      
+      console.log('All permissions granted:', allGranted);
+      setHasPermission(allGranted);
+      
+      if (!allGranted) {
+        console.log('Permission details:', {
+          camera: cameraPermission.status,
+          audio: audioPermission.status,
+          mediaLibrary: mediaLibraryPermission.status
+        });
+      }
+    } catch (error) {
+      console.error('Permission request error:', error);
+      setHasPermission(false);
+    }
+  };
+
+  const saveToPostsTable = async (mediaUri: string, isVideo: boolean = false) => {
+    try {
+      // 現在のユーザーを取得
+      const { data: { user } } = await authService.getCurrentUser();
+      
+      if (!user) {
+        console.log('ユーザーがログインしていません');
+        return;
+      }
+
+      // 現在の日時でタイトルを生成
+      const now = new Date();
+      const title = `${isVideo ? '動画' : '写真'}_${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
+      
+      // postsテーブルに登録
+      const newPost = await postService.createPost({
+        title: title,
+        menu_name: isVideo ? '撮影動画' : '撮影写真',
+        media_url: mediaUri,
+        is_video: isVideo,
+        user_id: user.id,
+        likes_count: 0,
+      });
+      
+      console.log('Postsテーブルに登録成功:', newPost);
+      
+    } catch (error) {
+      console.error('Postsテーブルへの登録エラー:', error);
+      // エラーがあっても撮影自体は成功しているので、ユーザーには通知しない
+    }
   };
 
   const takePicture = async () => {
@@ -39,12 +117,17 @@ export default function CameraScreen() {
       try {
         const photo = await cameraRef.current.takePictureAsync();
         if (photo) {
+          // アルバムに保存
           await MediaLibrary.saveToLibraryAsync(photo.uri);
-          Alert.alert('写真を撮影しました!', '', [
-            { text: 'もう一度撮影', style: 'cancel' },
+          
+          // postsテーブルに自動登録
+          await saveToPostsTable(photo.uri, false);
+          
+          Alert.alert('写真を撮影しました!', 'アルバムと投稿一覧に保存されました。', [
+            { text: '続けて撮影', style: 'cancel' },
             { 
-              text: '投稿する', 
-              onPress: () => router.push(`/post/create?imageUri=${encodeURIComponent(photo.uri)}`)
+              text: 'アルバムで確認', 
+              onPress: () => router.push('/gallery')
             }
           ]);
         }
@@ -82,9 +165,20 @@ export default function CameraScreen() {
           setIsRecording(false);
           setRetryCount(0); // リセット
           if (video && video.uri) {
+            // アルバムに保存
             await MediaLibrary.saveToLibraryAsync(video.uri);
+            
+            // postsテーブルに自動登録
+            await saveToPostsTable(video.uri, true);
+            
             setRecordedVideo(video.uri);
-            Alert.alert('動画を保存しました!', 'ギャラリーで確認できます。');
+            Alert.alert('動画を保存しました!', 'アルバムと投稿一覧に保存されました。', [
+              { text: '続けて撮影', style: 'cancel' },
+              { 
+                text: 'アルバムで確認', 
+                onPress: () => router.push('/gallery')
+              }
+            ]);
           }
         }
       } catch (error) {
@@ -144,10 +238,20 @@ export default function CameraScreen() {
   if (hasPermission === false) {
     return (
       <View style={styles.container}>
-        <Text style={styles.text}>カメラ、マイク、メディアライブラリへのアクセスが必要です。</Text>
-        <TouchableOpacity style={styles.button} onPress={getCameraPermissions}>
-          <Text style={styles.buttonText}>権限を再取得</Text>
-        </TouchableOpacity>
+        <View style={styles.permissionContainer}>
+          <Ionicons name="camera-outline" size={80} color="#666" />
+          <Text style={styles.permissionTitle}>カメラアクセスが必要です</Text>
+          <Text style={styles.permissionText}>
+            この機能を使用するには、カメラ、マイク、メディアライブラリへのアクセス許可が必要です。
+          </Text>
+          <Text style={styles.permissionInstructions}>
+            ブラウザで「許可」を選択してください。{'\n'}
+            または、アドレスバーの🔒アイコンから設定を変更できます。
+          </Text>
+          <TouchableOpacity style={styles.button} onPress={getCameraPermissions}>
+            <Text style={styles.buttonText}>権限を再取得</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
@@ -452,5 +556,34 @@ const styles = StyleSheet.create({
   video: {
     width: '100%',
     height: '100%',
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+  },
+  permissionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: 'white',
+    marginTop: 20,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  permissionText: {
+    fontSize: 16,
+    color: '#ccc',
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 20,
+  },
+  permissionInstructions: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 30,
+    fontStyle: 'italic',
   },
 });

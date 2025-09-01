@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { authService, userService, postService } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
@@ -37,93 +39,77 @@ interface UserProfile {
 }
 
 export default function ProfileScreen() {
-  const [userProfile, setUserProfile] = useState<UserProfile>({
-    id: '1',
-    username: 'staff_user',
-    displayName: 'スタッフユーザー',
-    avatar: 'https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=S',
-    postsCount: 24,
-  });
-
+  const router = useRouter();
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [userPosts, setUserPosts] = useState<UserPost[]>([]);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editUsername, setEditUsername] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadUserPosts();
+    loadUserProfile();
   }, []);
 
-  const loadUserPosts = async () => {
-    // TODO: 実際のユーザー投稿データを取得
-    // 現在はダミーデータ
-    const dummyPosts: UserPost[] = [
-      {
-        id: '1',
-        title: '本日のパスタ',
-        menuName: 'カルボナーラ',
-        mediaUri: 'https://via.placeholder.com/400x400/FFB6C1/000000?text=Pasta',
-        isVideo: false,
-        createdAt: new Date('2024-01-15'),
-        likesCount: 42,
-      },
-      {
-        id: '2',
-        title: 'デザート',
-        menuName: 'ティラミス',
-        mediaUri: 'https://via.placeholder.com/400x400/98FB98/000000?text=Dessert',
-        isVideo: false,
-        createdAt: new Date('2024-01-14'),
-        likesCount: 38,
-      },
-      {
-        id: '3',
-        title: 'サラダ',
-        menuName: 'シーザーサラダ',
-        mediaUri: 'https://via.placeholder.com/400x400/87CEEB/000000?text=Video',
-        isVideo: true,
-        createdAt: new Date('2024-01-13'),
-        likesCount: 25,
-      },
-      {
-        id: '4',
-        title: 'スープ',
-        menuName: 'コーンスープ',
-        mediaUri: 'https://via.placeholder.com/400x400/DDA0DD/000000?text=Soup',
-        isVideo: false,
-        createdAt: new Date('2024-01-12'),
-        likesCount: 31,
-      },
-      {
-        id: '5',
-        title: 'メイン',
-        menuName: 'ステーキ',
-        mediaUri: 'https://via.placeholder.com/400x400/F0E68C/000000?text=Steak',
-        isVideo: false,
-        createdAt: new Date('2024-01-11'),
-        likesCount: 67,
-      },
-      {
-        id: '6',
-        title: 'ドリンク',
-        menuName: 'コーヒー',
-        mediaUri: 'https://via.placeholder.com/400x400/D2691E/000000?text=Coffee',
-        isVideo: false,
-        createdAt: new Date('2024-01-10'),
-        likesCount: 18,
-      },
-    ];
+  const loadUserProfile = async () => {
+    try {
+      setLoading(true);
+      
+      // 現在のユーザーを取得
+      const { data: { user } } = await authService.getCurrentUser();
+      
+      if (!user) {
+        router.replace('/login');
+        return;
+      }
 
-    setUserPosts(dummyPosts);
+      // ユーザープロフィールを取得
+      const profile = await userService.getProfile(user.id);
+      
+      // ユーザーの投稿を取得
+      const posts = await postService.getUserPosts(user.id);
+      
+      // 投稿数を取得
+      const postsCount = await postService.getUserPostsCount(user.id);
+      
+      setUserProfile({
+        id: profile.id,
+        username: profile.username,
+        displayName: profile.display_name,
+        avatar: profile.avatar_url || 'https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=' + profile.display_name.charAt(0),
+        postsCount: postsCount,
+      });
+
+      // 投稿データを変換
+      const formattedPosts: UserPost[] = posts.map(post => ({
+        id: post.id,
+        title: post.title,
+        menuName: post.menu_name,
+        mediaUri: post.media_url,
+        isVideo: post.is_video,
+        createdAt: new Date(post.created_at),
+        likesCount: post.likes_count,
+      }));
+
+      setUserPosts(formattedPosts);
+    } catch (error) {
+      console.error('Error loading user profile:', error);
+      Alert.alert('エラー', 'プロフィールの読み込みに失敗しました。');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleEditProfile = () => {
+    if (!userProfile) return;
     setEditDisplayName(userProfile.displayName);
     setEditUsername(userProfile.username);
     setIsEditModalVisible(true);
   };
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
+    if (!userProfile) return;
+    
     if (!editDisplayName.trim()) {
       Alert.alert('エラー', '表示名を入力してください。');
       return;
@@ -137,14 +123,55 @@ export default function ProfileScreen() {
       return;
     }
 
-    setUserProfile(prev => ({
-      ...prev,
-      displayName: editDisplayName.trim(),
-      username: editUsername.trim().toLowerCase()
-    }));
-    
-    setIsEditModalVisible(false);
-    Alert.alert('成功', 'プロフィールを更新しました。');
+    try {
+      // ユーザー名の重複チェック
+      const isAvailable = await userService.checkUsernameAvailability(editUsername.trim().toLowerCase(), userProfile.id);
+      if (!isAvailable) {
+        Alert.alert('エラー', 'このユーザー名は既に使用されています。');
+        return;
+      }
+
+      // プロフィールを更新
+      await userService.updateProfile(userProfile.id, {
+        display_name: editDisplayName.trim(),
+        username: editUsername.trim().toLowerCase(),
+      });
+
+      setUserProfile(prev => prev ? {
+        ...prev,
+        displayName: editDisplayName.trim(),
+        username: editUsername.trim().toLowerCase()
+      } : null);
+      
+      setIsEditModalVisible(false);
+      Alert.alert('成功', 'プロフィールを更新しました。');
+    } catch (error) {
+      console.error('Profile update error:', error);
+      Alert.alert('エラー', 'プロフィールの更新に失敗しました。');
+    }
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      'ログアウト',
+      '本当にログアウトしますか？',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: 'ログアウト',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await authService.signOut();
+              router.replace('/login');
+            } catch (error) {
+              console.error('Logout error:', error);
+              Alert.alert('エラー', 'ログアウトに失敗しました。');
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleCancelEdit = () => {
@@ -173,28 +200,55 @@ export default function ProfileScreen() {
     </TouchableOpacity>
   );
 
-  const renderHeader = () => (
-    <View style={styles.header}>
-      <View style={styles.avatarContainer}>
-        <Image
-          source={{ uri: userProfile.avatar }}
-          style={styles.avatar}
-          contentFit="cover"
-        />
+  const renderHeader = () => {
+    if (!userProfile) return null;
+    
+    return (
+      <View style={styles.header}>
+        <View style={styles.avatarContainer}>
+          <Image
+            source={{ uri: userProfile.avatar }}
+            style={styles.avatar}
+            contentFit="cover"
+          />
+        </View>
+        
+        <Text style={styles.displayName}>{userProfile.displayName}</Text>
+        
+        <View style={styles.statsContainer}>
+          <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
+          <Text style={styles.statLabel}>ポスト</Text>
+        </View>
+        
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity style={styles.editButton} onPress={handleEditProfile}>
+            <Text style={styles.editButtonText}>プロフィールを編集</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={16} color="#ff4444" />
+            <Text style={styles.logoutButtonText}>ログアウト</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-      
-      <Text style={styles.displayName}>{userProfile.displayName}</Text>
-      
-      <View style={styles.statsContainer}>
-        <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
-        <Text style={styles.statLabel}>ポスト</Text>
+    );
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <Text style={styles.loadingText}>読み込み中...</Text>
       </View>
-      
-      <TouchableOpacity style={styles.editButton} onPress={handleEditProfile}>
-        <Text style={styles.editButtonText}>プロフィールを編集</Text>
-      </TouchableOpacity>
-    </View>
-  );
+    );
+  }
+
+  if (!userProfile) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <Text style={styles.loadingText}>プロフィールが見つかりません</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -322,18 +376,48 @@ const styles = StyleSheet.create({
     color: '#8e8e8e',
     marginTop: 2,
   },
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
   editButton: {
     backgroundColor: '#f0f0f0',
     paddingVertical: 8,
     paddingHorizontal: 24,
     borderRadius: 6,
-    marginTop: 12,
+    flex: 1,
   },
   editButtonText: {
     fontSize: 14,
     fontWeight: '600',
     color: '#262626',
     textAlign: 'center',
+  },
+  logoutButton: {
+    backgroundColor: '#fff5f5',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ff4444',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  logoutButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ff4444',
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#8e8e8e',
   },
   modalOverlay: {
     flex: 1,

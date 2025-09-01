@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { postService } from '@/lib/supabase';
+import { postService, authService } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -29,15 +29,6 @@ interface MediaItem {
   fileName: string;
 }
 
-type PostCategory = 'appetizer' | 'main' | 'dessert' | 'drink' | 'other';
-
-const categories = [
-  { key: 'appetizer', label: '前菜', icon: 'restaurant-outline' },
-  { key: 'main', label: 'メイン', icon: 'nutrition-outline' },
-  { key: 'dessert', label: 'デザート', icon: 'ice-cream-outline' },
-  { key: 'drink', label: 'ドリンク', icon: 'wine-outline' },
-  { key: 'other', label: 'その他', icon: 'ellipsis-horizontal-outline' },
-];
 
 export default function CreatePostScreen() {
   const router = useRouter();
@@ -46,8 +37,6 @@ export default function CreatePostScreen() {
   const [formData, setFormData] = useState({
     title: '',
     menuName: '',
-    description: '',
-    category: 'main' as PostCategory,
     shootingDate: new Date(),
   });
 
@@ -66,15 +55,26 @@ export default function CreatePostScreen() {
       };
       setMediaItems([newMediaItem]);
     }
-  }, [params.imageUri]);
+    // アルバムから選択されたメディアを追加
+    else if (params.selectedMedia) {
+      const selectedUris = (params.selectedMedia as string).split(',');
+      const newMediaItems: MediaItem[] = selectedUris.map((uri, index) => {
+        const isVideo = uri.includes('.mp4') || uri.includes('.mov') || uri.includes('.avi');
+        return {
+          id: `selected_${Date.now()}_${index}`,
+          uri: decodeURIComponent(uri),
+          type: isVideo ? 'video' : 'photo',
+          fileName: `media_${Date.now()}_${index}.${isVideo ? 'mp4' : 'jpg'}`,
+        };
+      });
+      setMediaItems(newMediaItems);
+    }
+  }, [params.imageUri, params.selectedMedia]);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleCategorySelect = (category: PostCategory) => {
-    setFormData(prev => ({ ...prev, category }));
-  };
 
   const handleDateChange = (event: any, selectedDate?: Date) => {
     setShowDatePicker(false);
@@ -106,6 +106,10 @@ export default function CreatePostScreen() {
       console.error('Error selecting media:', error);
       Alert.alert('エラー', 'メディアの選択に失敗しました。');
     }
+  };
+
+  const selectFromAlbum = () => {
+    router.push('/gallery');
   };
 
   const takePhoto = async () => {
@@ -157,30 +161,31 @@ export default function CreatePostScreen() {
 
     setLoading(true);
     try {
-      // TODO: Supabaseにデータを保存
-      const postData = {
-        ...formData,
-        mediaItems,
-        userId: 'current-user-id', // 実際のユーザーIDに置き換え
-      };
-
-      // ダミーの保存処理（実際はSupabaseを使用）
-      console.log('Saving post:', postData);
+      // 現在のユーザーを取得
+      const { data: { user } } = await authService.getCurrentUser();
       
+      if (!user) {
+        Alert.alert('エラー', 'ログインが必要です。');
+        router.replace('/login');
+        return;
+      }
+
       // 投稿データをSupabaseに保存
-      // const savedPost = await postService.createPost({
-      //   title: formData.title,
-      //   menu_name: formData.menuName,
-      //   media_url: mediaItems[0].uri, // メイン画像
-      //   is_video: mediaItems[0].type === 'video',
-      //   user_id: 'current-user-id',
-      //   likes_count: 0,
-      // });
+      const savedPost = await postService.createPost({
+        title: formData.title,
+        menu_name: formData.menuName,
+        media_url: mediaItems[0].uri, // メイン画像
+        is_video: mediaItems[0].type === 'video',
+        user_id: user.id,
+        likes_count: 0,
+      });
+
+      console.log('Post created successfully:', savedPost);
 
       Alert.alert(
         '投稿完了',
         '投稿が正常に作成されました。',
-        [{ text: 'OK', onPress: () => router.back() }]
+        [{ text: 'OK', onPress: () => router.push('/(tabs)/history') }]
       );
     } catch (error) {
       console.error('Error creating post:', error);
@@ -253,9 +258,9 @@ export default function CreatePostScreen() {
                       <Ionicons name="camera" size={24} color="#666" />
                       <Text style={styles.mediaActionText}>撮影</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.mediaActionButton} onPress={selectMediaFromLibrary}>
-                      <Ionicons name="images" size={24} color="#666" />
-                      <Text style={styles.mediaActionText}>選択</Text>
+                    <TouchableOpacity style={styles.mediaActionButton} onPress={selectFromAlbum}>
+                      <Ionicons name="albums" size={24} color="#666" />
+                      <Text style={styles.mediaActionText}>アルバム</Text>
                     </TouchableOpacity>
                   </View>
                 ) : null
@@ -291,37 +296,6 @@ export default function CreatePostScreen() {
               />
             </View>
 
-            {/* Category */}
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>カテゴリ</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View style={styles.categoryContainer}>
-                  {categories.map((category) => (
-                    <TouchableOpacity
-                      key={category.key}
-                      style={[
-                        styles.categoryButton,
-                        formData.category === category.key && styles.categoryButtonActive
-                      ]}
-                      onPress={() => handleCategorySelect(category.key as PostCategory)}
-                    >
-                      <Ionicons 
-                        name={category.icon as any} 
-                        size={20} 
-                        color={formData.category === category.key ? '#fff' : '#666'} 
-                      />
-                      <Text style={[
-                        styles.categoryButtonText,
-                        formData.category === category.key && styles.categoryButtonTextActive
-                      ]}>
-                        {category.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-            </View>
-
             {/* Shooting Date */}
             <View style={styles.inputContainer}>
               <Text style={styles.inputLabel}>撮影日時</Text>
@@ -340,20 +314,6 @@ export default function CreatePostScreen() {
                   })}
                 </Text>
               </TouchableOpacity>
-            </View>
-
-            {/* Description */}
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>説明（任意）</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={formData.description}
-                onChangeText={(text) => handleInputChange('description', text)}
-                placeholder="料理の特徴や材料などを入力"
-                multiline
-                numberOfLines={4}
-                maxLength={500}
-              />
             </View>
           </View>
         </ScrollView>
@@ -547,5 +507,58 @@ const styles = StyleSheet.create({
   dateButtonText: {
     fontSize: 16,
     color: '#262626',
+  },
+  addCategoryButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f8f9fa',
+    borderWidth: 1,
+    borderColor: '#e1e5e9',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  addCategoryModal: {
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    padding: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#e1e5e9',
+  },
+  addCategoryInput: {
+    borderWidth: 1,
+    borderColor: '#dbdbdb',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  addCategoryActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+  addCategoryCancel: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  addCategoryCancelText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  addCategoryConfirm: {
+    backgroundColor: '#0095f6',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  addCategoryConfirmText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

@@ -300,23 +300,4 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#f0f0f0',
   },
-  photoOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  photoTitle: {
-    color: 'white',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  photoMenu: {
-    color: 'white',
-    fontSize: 8,
-    opacity: 0.9,
-  },
 });
