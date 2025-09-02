@@ -106,9 +106,10 @@ export default function HistoryScreen() {
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除', style: 'destructive', onPress: async () => {
           try {
-            // TODO: Supabaseから削除
-            // await postService.deletePost(post.id);
+            // Supabaseから削除
+            await postService.deletePost(post.id);
             
+            // ローカル状態も更新
             setPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
             Alert.alert('削除完了', 'ポストを削除しました。');
           } catch (error) {

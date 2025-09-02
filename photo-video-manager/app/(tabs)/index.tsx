@@ -5,7 +5,7 @@ import { Video } from 'expo-av';
 import * as MediaLibrary from 'expo-media-library';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { postService, authService } from '@/lib/supabase';
+import { mediaLibraryService, authService } from '@/lib/supabase';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -80,9 +80,9 @@ export default function CameraScreen() {
     }
   };
 
-  const saveToPostsTable = async (mediaUri: string, isVideo: boolean = false) => {
+
+  const saveToAppLibrary = async (mediaUri: string, isVideo: boolean = false) => {
     try {
-      // 現在のユーザーを取得
       const { data: { user } } = await authService.getCurrentUser();
       
       if (!user) {
@@ -90,25 +90,24 @@ export default function CameraScreen() {
         return;
       }
 
-      // 現在の日時でタイトルを生成
+      // ファイル名を生成
       const now = new Date();
-      const title = `${isVideo ? '動画' : '写真'}_${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}`;
-      
-      // postsテーブルに登録
-      const newPost = await postService.createPost({
-        title: title,
-        menu_name: isVideo ? '撮影動画' : '撮影写真',
-        media_url: mediaUri,
-        is_video: isVideo,
+      const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
+      const filename = `${isVideo ? 'video' : 'photo'}_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`;
+
+      // media_libraryテーブルに登録
+      await mediaLibraryService.addMedia({
         user_id: user.id,
-        likes_count: 0,
+        filename: filename,
+        file_path: mediaUri,
+        mime_type: isVideo ? 'video/mp4' : 'image/jpeg',
+        is_video: isVideo,
       });
       
-      console.log('Postsテーブルに登録成功:', newPost);
+      console.log('Media saved to app library:', filename);
       
     } catch (error) {
-      console.error('Postsテーブルへの登録エラー:', error);
-      // エラーがあっても撮影自体は成功しているので、ユーザーには通知しない
+      console.error('Error saving to app library:', error);
     }
   };
 
@@ -120,10 +119,10 @@ export default function CameraScreen() {
           // アルバムに保存
           await MediaLibrary.saveToLibraryAsync(photo.uri);
           
-          // postsテーブルに自動登録
-          await saveToPostsTable(photo.uri, false);
+          // アプリのライブラリにも登録
+          await saveToAppLibrary(photo.uri, false);
           
-          Alert.alert('写真を撮影しました!', 'アルバムと投稿一覧に保存されました。', [
+          Alert.alert('写真を撮影しました!', 'アルバムに保存されました。', [
             { text: '続けて撮影', style: 'cancel' },
             { 
               text: 'アルバムで確認', 
@@ -168,11 +167,11 @@ export default function CameraScreen() {
             // アルバムに保存
             await MediaLibrary.saveToLibraryAsync(video.uri);
             
-            // postsテーブルに自動登録
-            await saveToPostsTable(video.uri, true);
+            // アプリのライブラリにも登録
+            await saveToAppLibrary(video.uri, true);
             
             setRecordedVideo(video.uri);
-            Alert.alert('動画を保存しました!', 'アルバムと投稿一覧に保存されました。', [
+            Alert.alert('動画を保存しました!', 'アルバムに保存されました。', [
               { text: '続けて撮影', style: 'cancel' },
               { 
                 text: 'アルバムで確認', 
