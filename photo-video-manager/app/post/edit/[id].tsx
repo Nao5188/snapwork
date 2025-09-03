@@ -7,9 +7,9 @@ import {
   TouchableOpacity,
   ScrollView,
   Alert,
-  SafeAreaView,
   KeyboardAvoidingView,
   Platform,
+  StatusBar,
   Dimensions,
   FlatList,
 } from 'react-native';
@@ -17,8 +17,7 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import DateTimePicker from '@react-native-community/datetimepicker';
-import { postService } from '@/lib/supabase';
+import { postService, authService } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
 
@@ -29,17 +28,7 @@ interface MediaItem {
   fileName: string;
 }
 
-type PostCategory = 'appetizer' | 'main' | 'dessert' | 'drink' | 'other';
 
-const categories = [
-  { key: 'appetizer', label: '前菜', icon: 'restaurant-outline' },
-  { key: 'main', label: 'メイン', icon: 'nutrition-outline' },
-  { key: 'dessert', label: 'デザート', icon: 'ice-cream-outline' },
-  { key: 'drink', label: 'ドリンク', icon: 'wine-outline' },
-  { key: 'other', label: 'その他', icon: 'ellipsis-horizontal-outline' },
-];
-
-const POST_EDIT_LIMIT_DAYS = 7;
 
 export default function EditPostScreen() {
   const router = useRouter();
@@ -47,60 +36,64 @@ export default function EditPostScreen() {
   
   const [formData, setFormData] = useState({
     title: '',
-    menuName: '',
-    description: '',
-    category: 'main' as PostCategory,
-    shootingDate: new Date(),
+    comment: '',
   });
 
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
-  const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
-  const [postCreatedAt, setPostCreatedAt] = useState<Date>(new Date());
-  const [canEdit, setCanEdit] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadPostData();
+    checkAuthAndLoadData();
   }, [id]);
+
+  const checkAuthAndLoadData = async () => {
+    try {
+      const { data } = await authService.getCurrentUser();
+      if (!data.user) {
+        Alert.alert('エラー', 'ログインが必要です。');
+        router.back();
+        return;
+      }
+      setCurrentUserId(data.user.id);
+      await loadPostData();
+    } catch (error) {
+      console.error('Auth check error:', error);
+      Alert.alert('エラー', '認証の確認に失敗しました。');
+      router.back();
+    }
+  };
 
   const loadPostData = async () => {
     try {
-      // TODO: Supabaseから投稿データを取得
-      // const post = await postService.getPost(id as string);
+      // Supabaseから投稿データを取得
+      const post = await postService.getPost(id as string);
       
-      // ダミーデータ（実際はSupabaseから取得）
-      const dummyPostData = {
-        title: '本日のパスタ',
-        menuName: 'カルボナーラ',
-        description: '新鮮な卵とチーズを使った特製カルボナーラです。',
-        category: 'main' as PostCategory,
-        shootingDate: new Date('2024-01-15T10:30:00'),
-        createdAt: new Date('2024-01-15T10:30:00'),
-        mediaItems: [
-          {
-            id: '1',
-            uri: 'https://via.placeholder.com/400x400/FFB6C1/000000?text=Pasta',
-            type: 'photo' as 'photo' | 'video',
-            fileName: 'pasta.jpg',
-          }
-        ],
-      };
-
+      // 投稿の所有者チェック
+      if (currentUserId && post.user_id !== currentUserId) {
+        Alert.alert('エラー', 'この投稿を編集する権限がありません。');
+        router.back();
+        return;
+      }
+      
       setFormData({
-        title: dummyPostData.title,
-        menuName: dummyPostData.menuName,
-        description: dummyPostData.description,
-        category: dummyPostData.category,
-        shootingDate: dummyPostData.shootingDate,
+        title: post.title,
+        comment: post.menu_name || '', // menu_nameをコメントとして表示
       });
 
-      setMediaItems(dummyPostData.mediaItems);
-      setPostCreatedAt(dummyPostData.createdAt);
-
-      // 編集可能期間をチェック
-      const daysSincePost = (Date.now() - dummyPostData.createdAt.getTime()) / (1000 * 60 * 60 * 24);
-      setCanEdit(daysSincePost <= POST_EDIT_LIMIT_DAYS);
+      // 実際の投稿画像を設定
+      const mediaItems: MediaItem[] = [];
+      if (post.media_url) {
+        mediaItems.push({
+          id: '1',
+          uri: post.media_url,
+          type: post.is_video ? 'video' : 'photo',
+          fileName: post.is_video ? 'video.mp4' : 'photo.jpg',
+        });
+      }
+      
+      setMediaItems(mediaItems);
 
     } catch (error) {
       console.error('Error loading post:', error);
@@ -115,22 +108,8 @@ export default function EditPostScreen() {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleCategorySelect = (category: PostCategory) => {
-    setFormData(prev => ({ ...prev, category }));
-  };
-
-  const handleDateChange = (event: any, selectedDate?: Date) => {
-    setShowDatePicker(false);
-    if (selectedDate) {
-      setFormData(prev => ({ ...prev, shootingDate: selectedDate }));
-    }
-  };
 
   const selectMediaFromLibrary = async () => {
-    if (!canEdit) {
-      Alert.alert('編集不可', '投稿から7日以上経過しているため編集できません。');
-      return;
-    }
 
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -157,10 +136,6 @@ export default function EditPostScreen() {
   };
 
   const takePhoto = async () => {
-    if (!canEdit) {
-      Alert.alert('編集不可', '投稿から7日以上経過しているため編集できません。');
-      return;
-    }
 
     try {
       const result = await ImagePicker.launchCameraAsync({
@@ -186,20 +161,12 @@ export default function EditPostScreen() {
   };
 
   const removeMediaItem = (id: string) => {
-    if (!canEdit) {
-      Alert.alert('編集不可', '投稿から7日以上経過しているため編集できません。');
-      return;
-    }
     setMediaItems(prev => prev.filter(item => item.id !== id));
   };
 
   const validateForm = () => {
     if (!formData.title.trim()) {
       Alert.alert('入力エラー', 'タイトルを入力してください。');
-      return false;
-    }
-    if (!formData.menuName.trim()) {
-      Alert.alert('入力エラー', 'メニュー名を入力してください。');
       return false;
     }
     if (mediaItems.length === 0) {
@@ -210,31 +177,18 @@ export default function EditPostScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!canEdit) {
-      Alert.alert('編集不可', '投稿から7日以上経過しているため編集できません。');
-      return;
-    }
 
     if (!validateForm()) return;
 
     setLoading(true);
     try {
-      // TODO: Supabaseでデータを更新
-      const postData = {
-        ...formData,
-        mediaItems,
-        postId: id,
-      };
-
-      console.log('Updating post:', postData);
-      
       // 投稿データをSupabaseで更新
-      // const updatedPost = await postService.updatePost(id as string, {
-      //   title: formData.title,
-      //   menu_name: formData.menuName,
-      //   media_url: mediaItems[0].uri,
-      //   is_video: mediaItems[0].type === 'video',
-      // });
+      const updatedPost = await postService.updatePost(id as string, {
+        title: formData.title,
+        menu_name: formData.comment, // コメントをmenu_nameとして保存
+        media_url: mediaItems.length > 0 ? mediaItems[0].uri : '',
+        is_video: mediaItems.length > 0 ? mediaItems[0].type === 'video' : false,
+      });
 
       Alert.alert(
         '更新完了',
@@ -250,10 +204,6 @@ export default function EditPostScreen() {
   };
 
   const handleDelete = () => {
-    if (!canEdit) {
-      Alert.alert('削除不可', '投稿から7日以上経過しているため削除できません。');
-      return;
-    }
 
     Alert.alert(
       '投稿削除',
@@ -265,8 +215,8 @@ export default function EditPostScreen() {
           style: 'destructive', 
           onPress: async () => {
             try {
-              // TODO: Supabaseから投稿を削除
-              // await postService.deletePost(id as string);
+              // Supabaseから投稿を削除
+              await postService.deletePost(id as string);
               
               Alert.alert(
                 '削除完了',
@@ -295,29 +245,27 @@ export default function EditPostScreen() {
           <Ionicons name="play" size={16} color="white" />
         </View>
       )}
-      {canEdit && (
-        <TouchableOpacity
-          style={styles.removeButton}
-          onPress={() => removeMediaItem(item.id)}
-        >
-          <Ionicons name="close-circle" size={20} color="red" />
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={styles.removeButton}
+        onPress={() => removeMediaItem(item.id)}
+      >
+        <Ionicons name="close-circle" size={20} color="red" />
+      </TouchableOpacity>
     </View>
   );
 
   if (initialLoading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.loadingContainer}>
           <Text>投稿データを読み込み中...</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <KeyboardAvoidingView 
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -329,31 +277,18 @@ export default function EditPostScreen() {
           </TouchableOpacity>
           <Text style={styles.headerTitle}>投稿を編集</Text>
           <View style={styles.headerActions}>
-            {canEdit ? (
-              <TouchableOpacity 
-                style={[styles.submitButton, loading && styles.submitButtonDisabled]}
-                onPress={handleSubmit}
-                disabled={loading}
-              >
-                <Text style={styles.submitButtonText}>
-                  {loading ? '更新中...' : '更新'}
-                </Text>
-              </TouchableOpacity>
-            ) : (
-              <Text style={styles.readOnlyText}>閲覧のみ</Text>
-            )}
+            <TouchableOpacity 
+              style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+              onPress={handleSubmit}
+              disabled={loading}
+            >
+              <Text style={styles.submitButtonText}>
+                {loading ? '更新中...' : '更新'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
-        {/* Edit Limit Warning */}
-        {!canEdit && (
-          <View style={styles.warningBanner}>
-            <Ionicons name="warning" size={20} color="#ff6b35" />
-            <Text style={styles.warningText}>
-              投稿から7日以上経過しているため編集できません
-            </Text>
-          </View>
-        )}
 
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
           {/* Media Section */}
@@ -368,7 +303,7 @@ export default function EditPostScreen() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.mediaList}
               ListFooterComponent={
-                canEdit && mediaItems.length < 5 ? (
+                mediaItems.length < 5 ? (
                   <View style={styles.mediaActions}>
                     <TouchableOpacity style={styles.mediaActionButton} onPress={takePhoto}>
                       <Ionicons name="camera" size={24} color="#666" />
@@ -392,120 +327,40 @@ export default function EditPostScreen() {
             <View style={styles.inputContainer}>
               <Text style={styles.inputLabel}>タイトル *</Text>
               <TextInput
-                style={[styles.input, !canEdit && styles.inputDisabled]}
+                style={styles.input}
                 value={formData.title}
                 onChangeText={(text) => handleInputChange('title', text)}
                 placeholder="投稿のタイトルを入力"
                 maxLength={100}
-                editable={canEdit}
               />
             </View>
 
-            {/* Menu Name */}
+            {/* Comment */}
             <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>メニュー名 *</Text>
+              <Text style={styles.inputLabel}>コメント</Text>
               <TextInput
-                style={[styles.input, !canEdit && styles.inputDisabled]}
-                value={formData.menuName}
-                onChangeText={(text) => handleInputChange('menuName', text)}
-                placeholder="料理名・商品名を入力"
-                maxLength={50}
-                editable={canEdit}
-              />
-            </View>
-
-            {/* Category */}
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>カテゴリ</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View style={styles.categoryContainer}>
-                  {categories.map((category) => (
-                    <TouchableOpacity
-                      key={category.key}
-                      style={[
-                        styles.categoryButton,
-                        formData.category === category.key && styles.categoryButtonActive,
-                        !canEdit && styles.categoryButtonDisabled
-                      ]}
-                      onPress={() => canEdit && handleCategorySelect(category.key as PostCategory)}
-                      disabled={!canEdit}
-                    >
-                      <Ionicons 
-                        name={category.icon as any} 
-                        size={20} 
-                        color={formData.category === category.key ? '#fff' : '#666'} 
-                      />
-                      <Text style={[
-                        styles.categoryButtonText,
-                        formData.category === category.key && styles.categoryButtonTextActive
-                      ]}>
-                        {category.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-            </View>
-
-            {/* Shooting Date */}
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>撮影日時</Text>
-              <TouchableOpacity 
-                style={[styles.dateButton, !canEdit && styles.inputDisabled]}
-                onPress={() => canEdit && setShowDatePicker(true)}
-                disabled={!canEdit}
-              >
-                <Ionicons name="calendar-outline" size={20} color="#666" />
-                <Text style={styles.dateButtonText}>
-                  {formData.shootingDate.toLocaleDateString('ja-JP', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Description */}
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>説明（任意）</Text>
-              <TextInput
-                style={[styles.input, styles.textArea, !canEdit && styles.inputDisabled]}
-                value={formData.description}
-                onChangeText={(text) => handleInputChange('description', text)}
-                placeholder="料理の特徴や材料などを入力"
+                style={[styles.input, styles.textArea]}
+                value={formData.comment}
+                onChangeText={(text) => handleInputChange('comment', text)}
+                placeholder="コメントを入力"
                 multiline
                 numberOfLines={4}
                 maxLength={500}
-                editable={canEdit}
               />
             </View>
           </View>
 
           {/* Delete Button */}
-          {canEdit && (
-            <View style={styles.section}>
-              <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
-                <Ionicons name="trash-outline" size={20} color="#ff3b30" />
-                <Text style={styles.deleteButtonText}>この投稿を削除</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+          <View style={styles.section}>
+            <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+              <Ionicons name="trash-outline" size={20} color="#ff3b30" />
+              <Text style={styles.deleteButtonText}>この投稿を削除</Text>
+            </TouchableOpacity>
+          </View>
         </ScrollView>
 
-        {/* Date Picker Modal */}
-        {showDatePicker && canEdit && (
-          <DateTimePicker
-            value={formData.shootingDate}
-            mode="datetime"
-            display="default"
-            onChange={handleDateChange}
-          />
-        )}
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -525,6 +380,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    paddingTop: Platform.OS === 'ios' ? 60 : (StatusBar.currentHeight || 0) + 12,
     backgroundColor: '#ffffff',
     borderBottomWidth: 0.5,
     borderBottomColor: '#dbdbdb',
