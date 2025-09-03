@@ -182,7 +182,6 @@ export default function LoginScreen() {
           <View style={styles.logoContainer}>
             <Ionicons name="camera" size={60} color="#262626" />
             <Text style={styles.appName}>PhotoManager</Text>
-            <Text style={styles.appSubtitle}>スタッフ専用アプリ</Text>
           </View>
         </View>
 
@@ -292,12 +291,6 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            スタッフ専用アプリです。{'\n'}
-            関係者以外の利用はご遠慮ください。
-          </Text>
-        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
