@@ -59,9 +59,12 @@ export default function RootLayout() {
       <Stack initialRouteName={isAuthenticated ? "(tabs)" : "login"}>
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="post/create" options={{ headerShown: false }} />
+        <Stack.Screen name="post/edit/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="gallery" options={{ headerShown: false }} />
         <Stack.Screen name="+not-found" />
       </Stack>
-      <StatusBar style="auto" />
+      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
     </ThemeProvider>
   );
 }
