@@ -112,7 +112,8 @@ export default function CameraScreen() {
   };
 
   const takePicture = async () => {
-    if (cameraRef.current && isCameraReady) {
+    console.log('takePicture called - isCameraReady:', isCameraReady, 'cameraRef.current:', !!cameraRef.current);
+    if (cameraRef.current) {
       try {
         const photo = await cameraRef.current.takePictureAsync();
         if (photo) {
@@ -134,8 +135,13 @@ export default function CameraScreen() {
         console.error('写真撮影エラー:', error);
         Alert.alert('エラー', '写真の撮影に失敗しました。');
       }
-    } else if (!isCameraReady) {
-      Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
+    } else {
+      console.log('Camera not ready or ref is null - isCameraReady:', isCameraReady, 'cameraRef:', !!cameraRef.current);
+      if (!isCameraReady) {
+        Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
+      } else {
+        Alert.alert('エラー', 'カメラが利用できません。');
+      }
     }
   };
 
@@ -151,6 +157,14 @@ export default function CameraScreen() {
           setRetryCount(0); // リセット
         } else {
           console.log('Starting video recording...');
+          
+          // カメラが準備できていない場合は少し待機してからリトライ
+          if (!isCameraReady) {
+            console.log('Camera not ready, waiting and trying anyway...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            // 準備状態を強制的にtrueにしてみる
+            setIsCameraReady(true);
+          }
           
           setIsRecording(true);
           const video = await cameraRef.current.recordAsync({
@@ -190,10 +204,13 @@ export default function CameraScreen() {
           console.log(`Camera not ready, retrying... (attempt ${retryCount + 1}/3)`);
           setRetryCount(prev => prev + 1);
           
-          // カメラを再初期化
+          // より長い待機時闳でカメラの準備を待つ
           setIsCameraReady(false);
           setTimeout(() => {
-            recordVideo();
+            setIsCameraReady(true);
+            setTimeout(() => {
+              recordVideo();
+            }, 200);
           }, 1000);
           return;
         }
@@ -214,19 +231,25 @@ export default function CameraScreen() {
   };
 
   const toggleCameraType = () => {
+    console.log('Toggling camera type');
     setIsCameraReady(false); // カメラ切り替え時は準備状態をリセット
     setRetryCount(0); // リトライカウントもリセット
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
   };
 
   const toggleFlash = () => {
+    console.log('Toggling flash mode from:', flashMode);
     setFlashMode(current => {
-      switch (current) {
-        case 'off': return 'on';
-        case 'on': return 'auto';
-        case 'auto': return 'off';
-        default: return 'off';
-      }
+      const newMode = (() => {
+        switch (current) {
+          case 'off': return 'on';
+          case 'on': return 'auto';
+          case 'auto': return 'off';
+          default: return 'off';
+        }
+      })();
+      console.log('Flash mode changed to:', newMode);
+      return newMode;
     });
   };
 
@@ -264,76 +287,98 @@ export default function CameraScreen() {
         flash={flashMode}
         onCameraReady={() => {
           console.log('Camera is ready!');
-          // 少し遅延を入れてから準備完了とする
+          // より長い遅延で確実に準備完了を待つ
           setTimeout(() => {
             setIsCameraReady(true);
             console.log('Camera ready state set to true');
-          }, 200);
+          }, 500);
         }}
       >
         {/* Top Controls */}
         <View style={styles.topControls}>
+          <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
+            <Ionicons name="close" size={28} color="white" />
+          </TouchableOpacity>
+          
+          <View style={styles.emptySpace} />
+          
           <TouchableOpacity style={styles.topButton} onPress={toggleFlash}>
             <Ionicons 
-              name={flashMode === 'off' ? 'flash-off-outline' : flashMode === 'on' ? 'flash' : 'flash-outline'} 
-              size={28} 
-              color="white" 
+              name={flashMode === 'off' ? 'flash-off' : flashMode === 'on' ? 'flash' : 'flash-outline'} 
+              size={24} 
+              color={flashMode === 'off' ? 'rgba(255,255,255,0.6)' : '#FFD700'}
             />
-          </TouchableOpacity>
-          <Text style={styles.modeText}>
-            {currentMode === 'photo' ? 'Photo' : 'Video'} {isCameraReady ? '✓' : '...'}
-          </Text>
-          <TouchableOpacity style={styles.topButton}>
-            <Ionicons name="settings-outline" size={28} color="white" />
           </TouchableOpacity>
         </View>
 
 
         {/* Bottom Controls */}
         <View style={styles.bottomControls}>
-          <View style={styles.leftControlsContainer}>
+          {/* Mode Selector */}
+          <View style={styles.modeContainer}>
             <TouchableOpacity 
-              style={styles.albumButton}
-              onPress={() => router.push('/gallery')}
-              activeOpacity={0.7}
+              style={[styles.modeButton, currentMode === 'photo' && styles.activeModeButton]}
+              onPress={() => {
+                console.log('Switching to photo mode');
+                setCurrentMode('photo');
+                // モード切り替え時はカメラ状態をリセット
+                setIsCameraReady(false);
+                setTimeout(() => setIsCameraReady(true), 300);
+              }}
+              activeOpacity={0.8}
             >
-              <Ionicons name="images-outline" size={24} color="white" />
+              <Text style={[styles.modeText, currentMode === 'photo' && styles.activeModeText]}>写真</Text>
             </TouchableOpacity>
-            
             <TouchableOpacity 
-              style={styles.modeToggleButton}
-              onPress={() => setCurrentMode(currentMode === 'photo' ? 'video' : 'photo')}
+              style={[styles.modeButton, currentMode === 'video' && styles.activeModeButton]}
+              onPress={() => {
+                console.log('Switching to video mode');
+                setCurrentMode('video');
+                // モード切り替え時はカメラ状態をリセット
+                setIsCameraReady(false);
+                setTimeout(() => setIsCameraReady(true), 300);
+              }}
+              activeOpacity={0.8}
             >
-              <Ionicons 
-                name={currentMode === 'photo' ? 'videocam-outline' : 'camera-outline'} 
-                size={24} 
-                color="white" 
-              />
+              <Text style={[styles.modeText, currentMode === 'video' && styles.activeModeText]}>動画</Text>
             </TouchableOpacity>
           </View>
           
-          <TouchableOpacity 
-            style={[
-              styles.captureButton, 
-              isRecording && styles.recording,
-              currentMode === 'video' && styles.videoModeButton
-            ]} 
-            onPress={currentMode === 'photo' ? takePicture : recordVideo}
-            activeOpacity={0.7}
-          >
-            <View style={[
-              styles.captureButtonInner,
-              isRecording && styles.recordingInner
-            ]} />
-          </TouchableOpacity>
-          
-          <View style={styles.rightControlsContainer}>
+          {/* Control Buttons */}
+          <View style={styles.controlsContainer}>
             <TouchableOpacity 
-              style={styles.flipButton} 
+              style={styles.albumButton}
+              onPress={() => {
+                console.log('Navigating to gallery');
+                router.push('/gallery');
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="images" size={28} color="white" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={[
+                styles.captureButton, 
+                isRecording && styles.recording,
+                !isCameraReady && styles.captureButtonDisabled
+              ]} 
+              onPress={currentMode === 'photo' ? takePicture : recordVideo}
+              activeOpacity={0.8}
+            >
+              <View style={[
+                styles.captureButtonInner,
+                isRecording && styles.recordingInner,
+                currentMode === 'video' && !isRecording && styles.videoCaptureInner
+              ]} />
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={styles.flipButton}
               onPress={toggleCameraType}
               activeOpacity={0.7}
             >
-              <Ionicons name="camera-reverse-outline" size={24} color="white" />
+              <Ionicons name="camera-reverse" size={28} color="white" />
             </TouchableOpacity>
           </View>
         </View>
@@ -341,30 +386,17 @@ export default function CameraScreen() {
         {/* Recording Indicator */}
         {isRecording && (
           <View style={styles.recordingIndicator}>
-            <View style={styles.recordingDot} />
-            <Text style={styles.recordingText}>REC</Text>
-          </View>
-        )}
-
-        {/* Camera Ready Indicator */}
-        {!isCameraReady && (
-          <View style={styles.cameraNotReadyIndicator}>
-            <Text style={styles.cameraNotReadyText}>カメラ準備中...</Text>
+            <View style={styles.recordingAnimation}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>REC</Text>
+            </View>
+            <View style={styles.recordingTimer}>
+              <Text style={styles.recordingTimerText}>00:30</Text>
+            </View>
           </View>
         )}
       </CameraView>
       
-      {recordedVideo && (
-        <View style={styles.videoPreview}>
-          <Video
-            source={{ uri: recordedVideo }}
-            style={styles.video}
-            useNativeControls
-            resizeMode="contain"
-            isLooping
-          />
-        </View>
-      )}
     </View>
   );
 }
@@ -390,6 +422,18 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
   },
+  closeButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptySpace: {
+    width: 44,
+    height: 44,
+  },
   topButton: {
     width: 44,
     height: 44,
@@ -398,128 +442,134 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  modeText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-    letterSpacing: 1,
-  },
-  activeModeText: {
-    color: '#FFD700',
-    textShadowColor: 'rgba(0, 0, 0, 0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
   bottomControls: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 30,
+    paddingHorizontal: 20,
     paddingBottom: 40,
     paddingTop: 20,
   },
-  leftControlsContainer: {
-    flex: 1,
+  modeContainer: {
     flexDirection: 'row',
-    gap: 15,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
+    marginBottom: 30,
   },
-  rightControlsContainer: {
-    flex: 1,
-    alignItems: 'flex-end',
+  modeButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    marginHorizontal: 10,
+  },
+  activeModeButton: {
+    borderBottomWidth: 2,
+    borderBottomColor: 'white',
+  },
+  modeText: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  activeModeText: {
+    color: 'white',
+    fontWeight: '600',
+  },
+  controlsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
   },
   albumButton: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  modeToggleButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  captureButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 4,
-    borderColor: 'white',
-  },
-  captureButtonInner: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'white',
-  },
-  videoModeButton: {
-    borderColor: '#FF3B30',
-  },
-  recordingInner: {
-    borderRadius: 8,
-    backgroundColor: '#FF3B30',
   },
   flipButton: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  captureButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    borderWidth: 4,
+    borderColor: 'white',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  captureButtonInner: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: 'white',
+  },
+  captureButtonDisabled: {
+    opacity: 0.5,
+  },
+  videoCaptureInner: {
+    backgroundColor: '#FF3B30',
+  },
+  recordingInner: {
+    backgroundColor: '#FF3B30',
+    borderRadius: 4,
+    width: 30,
+    height: 30,
   },
   recording: {
     borderColor: '#FF3B30',
   },
   recordingIndicator: {
     position: 'absolute',
-    top: 100,
-    left: 20,
+    top: 120,
+    left: 24,
+    right: 24,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  recordingAnimation: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 59, 48, 0.9)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
+    backgroundColor: 'rgba(255, 59, 48, 0.95)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backdropFilter: 'blur(10px)',
+  },
+  recordingTimer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backdropFilter: 'blur(10px)',
+  },
+  recordingTimerText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+    fontFamily: 'monospace',
   },
   recordingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: 'white',
-    marginRight: 6,
+    marginRight: 8,
   },
   recordingText: {
     color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-  },
-  cameraNotReadyIndicator: {
-    position: 'absolute',
-    top: 100,
-    right: 20,
-    backgroundColor: 'rgba(255, 193, 7, 0.9)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
-  },
-  cameraNotReadyText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 1.2,
   },
   text: {
     fontSize: 18,
@@ -540,21 +590,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
-  },
-  videoPreview: {
-    position: 'absolute',
-    top: 100,
-    right: 20,
-    width: 100,
-    height: 140,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  video: {
-    width: '100%',
-    height: '100%',
   },
   permissionContainer: {
     flex: 1,
