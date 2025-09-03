@@ -7,7 +7,8 @@ import {
   Text,
   Dimensions,
   Alert,
-  SafeAreaView,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -216,17 +217,17 @@ export default function GalleryScreen() {
 
   if (hasPermission === null) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.centerContent}>
           <Text style={styles.loadingText}>ギャラリーの権限を確認中...</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   if (hasPermission === false) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity 
             style={styles.backButton}
@@ -244,34 +245,38 @@ export default function GalleryScreen() {
             <Text style={styles.permissionButtonText}>権限を許可</Text>
           </TouchableOpacity>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
-        >
-          <Ionicons name="chevron-back" size={24} color="#262626" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>アルバム</Text>
-        {selectionMode ? (
-          <TouchableOpacity style={styles.cancelButton} onPress={cancelSelection}>
-            <Text style={styles.cancelButtonText}>キャンセル</Text>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity 
+            style={styles.backButton}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={24} color="#262626" />
           </TouchableOpacity>
-        ) : (
-          <View style={styles.headerActions}>
-            <TouchableOpacity style={styles.addButton} onPress={addFromLibrary}>
-              <Ionicons name="add" size={24} color="#0095f6" />
+        </View>
+        <Text style={styles.headerTitle}>アルバム</Text>
+        <View style={styles.headerRight}>
+          {selectionMode ? (
+            <TouchableOpacity style={styles.cancelButton} onPress={cancelSelection}>
+              <Text style={styles.cancelButtonText}>キャンセル</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.refreshButton} onPress={loadMediaAssets}>
-              <Ionicons name="refresh" size={24} color="#262626" />
-            </TouchableOpacity>
-          </View>
-        )}
+          ) : (
+            <View style={styles.headerActions}>
+              <TouchableOpacity style={styles.addButton} onPress={addFromLibrary}>
+                <Ionicons name="add" size={24} color="#0095f6" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.refreshButton} onPress={loadMediaAssets}>
+                <Ionicons name="refresh" size={24} color="#262626" />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
       </View>
 
       {loading ? (
@@ -308,7 +313,7 @@ export default function GalleryScreen() {
         )}
       </>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -323,6 +328,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    paddingTop: Platform.OS === 'ios' ? 60 : (StatusBar.currentHeight || 0) + 12,
     backgroundColor: '#ffffff',
     borderBottomWidth: 0.5,
     borderBottomColor: '#dbdbdb',
@@ -333,10 +339,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  headerLeft: {
+    minWidth: 100,
+    alignItems: 'flex-start',
+  },
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#262626',
+    flex: 1,
+    textAlign: 'center',
+  },
+  headerRight: {
+    minWidth: 100,
+    alignItems: 'flex-end',
   },
   headerActions: {
     flexDirection: 'row',
