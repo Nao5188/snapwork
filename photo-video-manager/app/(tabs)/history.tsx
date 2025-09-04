@@ -11,7 +11,7 @@ import {
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { postService, authService, supabase } from '@/lib/supabase';
+import { postService, authService, supabase, userService } from '@/lib/supabase';
 
 interface PostHistoryItem {
   id: string;
@@ -24,12 +24,18 @@ interface PostHistoryItem {
   description?: string;
   created_at: string;
   user_id: string;
+  users?: {
+    username: string;
+    display_name: string;
+    avatar_url?: string;
+  };
 }
 
 export default function HistoryScreen() {
   const router = useRouter();
   const [posts, setPosts] = useState<PostHistoryItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
 
   useEffect(() => {
     loadPosts();
@@ -49,20 +55,76 @@ export default function HistoryScreen() {
 
       console.log('Loading posts for user:', user.id);
 
+      // 現在のユーザーのプロフィール情報を取得
+      const { data: currentProfile } = await supabase
+        .from('users')
+        .select('id, username, display_name, avatar_url')
+        .eq('id', user.id)
+        .single();
+
+      if (currentProfile) {
+        setCurrentUserProfile(currentProfile);
+        console.log('Current user profile:', currentProfile);
+      }
+
       // Supabaseからpostsテーブルのデータを取得
-      const { data, error } = await supabase
+      const { data: postsData, error: postsError } = await supabase
         .from('posts')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Supabase query error:', error);
-        throw error;
+      if (postsError) {
+        console.error('Supabase query error:', postsError);
+        throw postsError;
       }
 
-      console.log('Posts loaded:', data?.length || 0, 'posts');
-      // データが取得できた場合は設定、なければ空配列
-      setPosts(data || []);
+      // 各投稿に対してプロフィール情報を取得
+      if (postsData && postsData.length > 0) {
+        // ユニークなuser_idのリストを取得
+        const userIds = [...new Set(postsData.map(post => post.user_id))];
+        
+        console.log('Fetching profiles for user IDs:', userIds);
+        
+        // プロフィール情報を一括取得
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('users')
+          .select('id, username, display_name, avatar_url')
+          .in('id', userIds);
+
+        if (profilesError) {
+          console.error('Profiles query error:', profilesError);
+        }
+
+        console.log('Profiles data:', profilesData);
+
+        // プロフィール情報をマップに変換
+        const profilesMap = new Map(
+          (profilesData || []).map(profile => [profile.id, profile])
+        );
+
+        // 投稿データにプロフィール情報を追加
+        const postsWithProfiles = postsData.map(post => {
+          const profile = profilesMap.get(post.user_id);
+          console.log(`Post ${post.id} user_id: ${post.user_id}, profile:`, profile);
+          
+          // プロフィールが見つからない場合、現在のユーザーのプロフィールを使用（同じユーザーの場合）
+          let finalProfile = profile;
+          if (!finalProfile && post.user_id === user.id && currentProfile) {
+            finalProfile = currentProfile;
+          }
+          
+          return {
+            ...post,
+            users: finalProfile || null
+          };
+        });
+
+        console.log('Posts loaded:', postsWithProfiles.length, 'posts');
+        setPosts(postsWithProfiles);
+      } else {
+        console.log('No posts found');
+        setPosts([]);
+      }
     } catch (error) {
       console.error('Error loading posts:', error);
       Alert.alert('エラー', '投稿データの読み込みに失敗しました。');
@@ -124,12 +186,36 @@ export default function HistoryScreen() {
   const renderPostItem = ({ item }: { item: PostHistoryItem }) => {
     const createdDate = new Date(item.created_at);
     
+    // プロフィール情報の取得
+    const displayName = item.users?.display_name || 'ユーザー';
+    const avatarUrl = item.users?.avatar_url || 
+      `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=${displayName.charAt(0).toUpperCase()}`;
+    
     return (
       <TouchableOpacity 
         style={styles.postItem}
         onPress={() => Alert.alert('ポスト詳細', `タイトル: ${item.title}\nメニュー: ${item.menu_name}`)}
         activeOpacity={0.7}
       >
+        {/* 投稿者情報ヘッダー */}
+        <View style={styles.userHeader}>
+          <View style={styles.userInfo}>
+            <Image
+              source={{ uri: avatarUrl }}
+              style={styles.userAvatar}
+              contentFit="cover"
+            />
+            <View>
+              <Text style={styles.userDisplayName}>
+                {displayName}
+              </Text>
+              <Text style={styles.postDateSmall}>
+                {formatDate(createdDate)} {formatTime(createdDate)}
+              </Text>
+            </View>
+          </View>
+        </View>
+
         <View style={styles.postImageContainer}>
           <Image
             source={{ uri: item.media_url }}
@@ -146,9 +232,6 @@ export default function HistoryScreen() {
         <View style={styles.postContent}>
           <View style={styles.postHeader}>
             <Text style={styles.postTitle} numberOfLines={1}>{item.title}</Text>
-            <Text style={styles.postDate}>
-              {formatDate(createdDate)} {formatTime(createdDate)}
-            </Text>
           </View>
           
           <Text style={styles.menuName}>{item.menu_name}</Text>
@@ -315,6 +398,35 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  userHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#e0e0e0',
+  },
+  userInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  userAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+  },
+  userDisplayName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#262626',
+  },
+  postDateSmall: {
+    fontSize: 12,
+    color: '#8e8e8e',
+    marginTop: 2,
+  },
   postContent: {
     padding: 16,
   },
@@ -329,12 +441,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#262626',
     flex: 1,
-    marginRight: 8,
-  },
-  postDate: {
-    fontSize: 12,
-    color: '#8e8e8e',
-    fontWeight: '500',
   },
   menuName: {
     fontSize: 14,
