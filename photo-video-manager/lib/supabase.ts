@@ -130,6 +130,8 @@ export const postService = {
 
   // 投稿作成
   async createPost(post: Omit<Post, 'id' | 'created_at' | 'updated_at'>) {
+    console.log('Creating post:', post);
+    
     const { data, error } = await supabase
       .from('posts')
       .insert({
@@ -137,9 +139,15 @@ export const postService = {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
+      .select()
       .single();
     
-    if (error) throw error;
+    if (error) {
+      console.error('Post creation error:', error);
+      throw error;
+    }
+    
+    console.log('Post created successfully:', data);
     return data;
   },
 
@@ -149,6 +157,56 @@ export const postService = {
       .from('posts')
       .delete()
       .eq('id', postId);
+    
+    if (error) throw error;
+  },
+};
+
+// メディアライブラリ関連の操作
+export const mediaLibraryService = {
+  // メディアをライブラリに追加
+  async addMedia(media: {
+    user_id: string;
+    filename: string;
+    file_path: string;
+    file_size?: number;
+    mime_type?: string;
+    is_video: boolean;
+    duration?: number;
+    width?: number;
+    height?: number;
+  }) {
+    const { data, error } = await supabase
+      .from('media_library')
+      .insert({
+        ...media,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    return data;
+  },
+
+  // ユーザーのメディア一覧取得
+  async getUserMedia(userId: string) {
+    const { data, error } = await supabase
+      .from('media_library')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    
+    if (error) throw error;
+    return data;
+  },
+
+  // メディア削除
+  async deleteMedia(mediaId: string) {
+    const { error } = await supabase
+      .from('media_library')
+      .delete()
+      .eq('id', mediaId);
     
     if (error) throw error;
   },
@@ -167,14 +225,22 @@ export const authService = {
     
     // ユーザープロフィールをusersテーブルに作成
     if (data.user) {
-      await supabase.from('users').insert({
-        id: data.user.id,
-        email,
-        username: userData.username,
-        display_name: userData.display_name,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      try {
+        const { error: insertError } = await supabase.from('users').insert({
+          id: data.user.id,
+          email,
+          username: userData.username,
+          display_name: userData.display_name,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        
+        if (insertError) {
+          console.error('User profile creation error:', insertError);
+        }
+      } catch (profileError) {
+        console.error('Failed to create user profile:', profileError);
+      }
     }
     
     return data;
@@ -188,6 +254,31 @@ export const authService = {
     });
     
     if (error) throw error;
+    
+    // ログイン時にusersテーブルにプロフィールが存在するか確認し、なければ作成
+    if (data.user) {
+      const { data: profile } = await supabase
+        .from('users')
+        .select('id')
+        .eq('id', data.user.id)
+        .single();
+      
+      if (!profile) {
+        try {
+          await supabase.from('users').insert({
+            id: data.user.id,
+            email: data.user.email || '',
+            username: data.user.email?.split('@')[0] || 'user',
+            display_name: data.user.email?.split('@')[0] || 'User',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        } catch (profileError) {
+          console.error('Failed to create user profile on signin:', profileError);
+        }
+      }
+    }
+    
     return data;
   },
 
