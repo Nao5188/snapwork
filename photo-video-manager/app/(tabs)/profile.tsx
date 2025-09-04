@@ -14,6 +14,7 @@ import {
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { authService, userService, postService } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
@@ -45,7 +46,9 @@ export default function ProfileScreen() {
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editUsername, setEditUsername] = useState('');
+  const [editAvatar, setEditAvatar] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     loadUserProfile();
@@ -104,7 +107,26 @@ export default function ProfileScreen() {
     if (!userProfile) return;
     setEditDisplayName(userProfile.displayName);
     setEditUsername(userProfile.username);
+    setEditAvatar(userProfile.avatar);
     setIsEditModalVisible(true);
+  };
+
+  const handleSelectAvatar = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setEditAvatar(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error selecting avatar:', error);
+      Alert.alert('エラー', '画像の選択に失敗しました。');
+    }
   };
 
   const handleSaveProfile = async () => {
@@ -123,24 +145,37 @@ export default function ProfileScreen() {
       return;
     }
 
+    setUploading(true);
     try {
       // ユーザー名の重複チェック
       const isAvailable = await userService.checkUsernameAvailability(editUsername.trim().toLowerCase(), userProfile.id);
       if (!isAvailable) {
         Alert.alert('エラー', 'このユーザー名は既に使用されています。');
+        setUploading(false);
         return;
+      }
+
+      let avatarUrl = userProfile.avatar;
+      
+      // 新しい画像が選択されている場合はアップロード
+      if (editAvatar && editAvatar !== userProfile.avatar) {
+        // 実際のアップロード処理はSupabaseのストレージ設定が必要
+        // ここでは仮のURLを設定
+        avatarUrl = editAvatar;
       }
 
       // プロフィールを更新
       await userService.updateProfile(userProfile.id, {
         display_name: editDisplayName.trim(),
         username: editUsername.trim().toLowerCase(),
+        avatar_url: avatarUrl,
       });
 
       setUserProfile(prev => prev ? {
         ...prev,
         displayName: editDisplayName.trim(),
-        username: editUsername.trim().toLowerCase()
+        username: editUsername.trim().toLowerCase(),
+        avatar: avatarUrl
       } : null);
       
       setIsEditModalVisible(false);
@@ -148,6 +183,8 @@ export default function ProfileScreen() {
     } catch (error) {
       console.error('Profile update error:', error);
       Alert.alert('エラー', 'プロフィールの更新に失敗しました。');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -178,6 +215,7 @@ export default function ProfileScreen() {
     setIsEditModalVisible(false);
     setEditDisplayName('');
     setEditUsername('');
+    setEditAvatar(null);
   };
 
 
@@ -280,12 +318,30 @@ export default function ProfileScreen() {
                 <Text style={styles.cancelText}>キャンセル</Text>
               </TouchableOpacity>
               <Text style={styles.modalTitle}>プロフィール編集</Text>
-              <TouchableOpacity onPress={handleSaveProfile}>
-                <Text style={styles.saveText}>保存</Text>
+              <TouchableOpacity onPress={handleSaveProfile} disabled={uploading}>
+                <Text style={[styles.saveText, uploading && styles.saveTextDisabled]}>
+                  {uploading ? '保存中...' : '保存'}
+                </Text>
               </TouchableOpacity>
             </View>
             
             <View style={styles.modalBody}>
+              <View style={styles.avatarEditContainer}>
+                <TouchableOpacity onPress={handleSelectAvatar} activeOpacity={0.8}>
+                  <View style={styles.avatarEditWrapper}>
+                    <Image
+                      source={{ uri: editAvatar || 'https://via.placeholder.com/150x150/cccccc/ffffff?text=画像なし' }}
+                      style={styles.avatarEdit}
+                      contentFit="cover"
+                    />
+                    <View style={styles.avatarEditOverlay}>
+                      <Ionicons name="camera" size={24} color="white" />
+                      <Text style={styles.avatarEditText}>変更</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              </View>
+
               <View style={styles.inputContainer}>
                 <Text style={styles.inputLabel}>表示名</Text>
                 <TextInput
@@ -453,6 +509,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#0095f6',
   },
+  saveTextDisabled: {
+    color: '#b3b3b3',
+  },
   modalBody: {
     paddingHorizontal: 20,
     paddingTop: 20,
@@ -479,6 +538,35 @@ const styles = StyleSheet.create({
   inputHint: {
     fontSize: 12,
     color: '#8e8e8e',
+    marginTop: 4,
+  },
+  avatarEditContainer: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  avatarEditWrapper: {
+    position: 'relative',
+  },
+  avatarEdit: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#f0f0f0',
+  },
+  avatarEditOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 50,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarEditText: {
+    color: 'white',
+    fontSize: 12,
     marginTop: 4,
   },
   row: {
