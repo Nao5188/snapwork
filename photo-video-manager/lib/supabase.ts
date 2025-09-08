@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { storageService } from './storage';
 
 // Supabase設定
 // 本番環境では環境変数を使用してください
@@ -75,6 +76,23 @@ export const userService = {
     if (error) throw error;
     return data.length === 0;
   },
+
+  // 表示名の重複チェック
+  async checkDisplayNameAvailability(displayName: string, excludeUserId?: string) {
+    let query = supabase
+      .from('users')
+      .select('id')
+      .eq('display_name', displayName);
+    
+    if (excludeUserId) {
+      query = query.neq('id', excludeUserId);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) throw error;
+    return data.length === 0;
+  },
 };
 
 // 投稿関連の操作
@@ -93,6 +111,26 @@ export const postService = {
 
   // 投稿更新
   async updatePost(postId: string, updates: Partial<Post>) {
+    // まず投稿が存在し、現在のユーザーが所有者かチェック
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      throw new Error('認証が必要です');
+    }
+
+    const { data: post } = await supabase
+      .from('posts')
+      .select('user_id')
+      .eq('id', postId)
+      .single();
+
+    if (!post) {
+      throw new Error('投稿が見つかりません');
+    }
+
+    if (post.user_id !== user.id) {
+      throw new Error('この投稿を編集する権限がありません');
+    }
+
     const { data, error } = await supabase
       .from('posts')
       .update({
@@ -153,6 +191,26 @@ export const postService = {
 
   // 投稿削除
   async deletePost(postId: string) {
+    // まず投稿が存在し、現在のユーザーが所有者かチェック
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      throw new Error('認証が必要です');
+    }
+
+    const { data: post } = await supabase
+      .from('posts')
+      .select('user_id')
+      .eq('id', postId)
+      .single();
+
+    if (!post) {
+      throw new Error('投稿が見つかりません');
+    }
+
+    if (post.user_id !== user.id) {
+      throw new Error('この投稿を削除する権限がありません');
+    }
+
     const { error } = await supabase
       .from('posts')
       .delete()
@@ -216,38 +274,81 @@ export const mediaLibraryService = {
 export const authService = {
   // サインアップ
   async signUp(email: string, password: string, userData: { username: string; display_name: string }) {
+    // まず既存ユーザーをチェック（usersテーブル）
+    const { data: existingUsers } = await supabase
+      .from('users')
+      .select('email')
+      .eq('email', email)
+      .limit(1);
+
+    if (existingUsers && existingUsers.length > 0) {
+      throw new Error('User already registered');
+    }
+
+    // ユーザー名の重複チェック（念のため二重チェック）
+    const { data: existingUsername } = await supabase
+      .from('users')
+      .select('username')
+      .eq('username', userData.username)
+      .limit(1);
+
+    if (existingUsername && existingUsername.length > 0) {
+      throw new Error('Username already exists');
+    }
+
+    // 表示名の重複チェック（念のため二重チェック）
+    const { data: existingDisplayName } = await supabase
+      .from('users')
+      .select('display_name')
+      .eq('display_name', userData.display_name)
+      .limit(1);
+
+    if (existingDisplayName && existingDisplayName.length > 0) {
+      throw new Error('Display name already exists');
+    }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
     });
     
     if (error) throw error;
+
+    // data.userがnullの場合や、既存ユーザーの場合の追加チェック
+    if (!data.user) {
+      throw new Error('User already registered');
+    }
+
+    // data.user.identitiesが空の場合、既存ユーザーの可能性
+    if (data.user.identities && data.user.identities.length === 0) {
+      throw new Error('User already registered');
+    }
     
     // ユーザープロフィールをusersテーブルに作成
-    if (data.user) {
-      try {
-        const { error: insertError } = await supabase.from('users').insert({
-          id: data.user.id,
-          email,
-          username: userData.username,
-          display_name: userData.display_name,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        
-        if (insertError) {
-          console.error('User profile creation error:', insertError);
-        }
-      } catch (profileError) {
-        console.error('Failed to create user profile:', profileError);
+    try {
+      const { error: insertError } = await supabase.from('users').insert({
+        id: data.user.id,
+        email,
+        username: userData.username,
+        display_name: userData.display_name,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      
+      if (insertError) {
+        console.error('User profile creation error:', insertError);
+        throw insertError;
       }
+    } catch (profileError) {
+      console.error('Failed to create user profile:', profileError);
+      throw profileError;
     }
     
     return data;
   },
 
   // サインイン
-  async signIn(email: string, password: string) {
+  async signIn(email: string, password: string, rememberMe: boolean = false) {
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -277,6 +378,13 @@ export const authService = {
           console.error('Failed to create user profile on signin:', profileError);
         }
       }
+
+      // Remember Me設定を保存
+      try {
+        await storageService.setRememberMe(email, rememberMe);
+      } catch (storageError) {
+        console.error('Failed to save remember me setting:', storageError);
+      }
     }
     
     return data;
@@ -284,6 +392,13 @@ export const authService = {
 
   // サインアウト
   async signOut() {
+    // Remember Me設定をクリア
+    try {
+      await storageService.clearRememberMe();
+    } catch (storageError) {
+      console.error('Failed to clear remember me setting:', storageError);
+    }
+    
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
   },
@@ -296,5 +411,30 @@ export const authService = {
   // 認証状態の監視
   onAuthStateChange(callback: (event: string, session: any) => void) {
     return supabase.auth.onAuthStateChange(callback);
+  },
+
+  // 自動ログインを試行
+  async attemptAutoLogin() {
+    try {
+      const rememberMeData = await storageService.getRememberMe();
+      
+      if (!rememberMeData || !rememberMeData.autoLoginEnabled) {
+        return { success: false, reason: 'Auto login not enabled' };
+      }
+
+      // Supabaseの現在のセッションを確認
+      const { data: { user }, error } = await supabase.auth.getUser();
+      
+      if (error || !user) {
+        // セッションが無効の場合はRemember Me設定をクリア
+        await storageService.clearRememberMe();
+        return { success: false, reason: 'No valid session' };
+      }
+
+      return { success: true, user, email: rememberMeData.email };
+    } catch (error) {
+      console.error('Auto login attempt failed:', error);
+      return { success: false, reason: 'Auto login failed', error };
+    }
   },
 };
