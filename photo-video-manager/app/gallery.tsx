@@ -114,6 +114,47 @@ export default function GalleryScreen() {
     router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}`);
   };
 
+  const handleDeleteMedia = async () => {
+    if (selectedItems.length === 0) {
+      Alert.alert('選択エラー', '削除するメディアを選択してください。');
+      return;
+    }
+
+    Alert.alert(
+      '削除確認',
+      `選択した${selectedItems.length}個のメディアを削除しますか？この操作は取り消せません。`,
+      [
+        {
+          text: 'キャンセル',
+          style: 'cancel',
+        },
+        {
+          text: '削除',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const mediaId of selectedItems) {
+                await mediaLibraryService.deleteMedia(mediaId);
+              }
+              
+              // リストを再読み込み
+              await loadMediaAssets();
+              
+              // 選択をクリア
+              setSelectedItems([]);
+              setSelectionMode(false);
+              
+              Alert.alert('削除完了', `${selectedItems.length}個のメディアを削除しました。`);
+            } catch (error) {
+              console.error('Error deleting media:', error);
+              Alert.alert('エラー', 'メディアの削除に失敗しました。');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const cancelSelection = () => {
     setSelectionMode(false);
     setSelectedItems([]);
@@ -151,7 +192,7 @@ export default function GalleryScreen() {
             file_size: asset.fileSize,
             mime_type: isVideo ? 'video/mp4' : 'image/jpeg',
             is_video: isVideo,
-            duration: asset.duration,
+            duration: asset.duration || undefined,
             width: asset.width,
             height: asset.height,
           });
@@ -306,9 +347,15 @@ export default function GalleryScreen() {
             <Text style={styles.selectionCount}>
               {selectedItems.length}個選択中
             </Text>
-            <TouchableOpacity style={styles.createPostButton} onPress={handleCreatePost}>
-              <Text style={styles.createPostButtonText}>投稿作成</Text>
-            </TouchableOpacity>
+            <View style={styles.actionButtons}>
+              <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteMedia}>
+                <Ionicons name="trash-outline" size={20} color="white" />
+                <Text style={styles.deleteButtonText}>削除</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.createPostButton} onPress={handleCreatePost}>
+                <Text style={styles.createPostButtonText}>投稿作成</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </>
@@ -509,6 +556,25 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '500',
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deleteButton: {
+    backgroundColor: '#e74c3c',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  deleteButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
   },
   createPostButton: {
     backgroundColor: '#0095f6',

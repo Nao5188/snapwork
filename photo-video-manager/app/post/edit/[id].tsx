@@ -10,7 +10,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   StatusBar,
-  Dimensions,
   FlatList,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -19,7 +18,6 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { postService, authService } from '@/lib/supabase';
 
-const { width } = Dimensions.get('window');
 
 interface MediaItem {
   id: string;
@@ -67,32 +65,45 @@ export default function EditPostScreen() {
 
   const loadPostData = async () => {
     try {
-      // Supabaseから投稿データを取得
-      const post = await postService.getPost(id as string);
-      
+      // Supabaseから投稿データと複数メディアを取得
+      const postWithMedia = await postService.getPostWithMedia(id as string);
+
       // 投稿の所有者チェック
-      if (currentUserId && post.user_id !== currentUserId) {
+      if (currentUserId && postWithMedia.user_id !== currentUserId) {
         Alert.alert('エラー', 'この投稿を編集する権限がありません。');
         router.back();
         return;
       }
-      
+
       setFormData({
-        title: post.title,
-        comment: post.menu_name || '', // menu_nameをコメントとして表示
+        title: postWithMedia.title,
+        comment: postWithMedia.menu_name || '',
       });
 
-      // 実際の投稿画像を設定
+      // 複数メディアまたは単一メディアを設定
       const mediaItems: MediaItem[] = [];
-      if (post.media_url) {
+
+      if (postWithMedia.mediaItems && postWithMedia.mediaItems.length > 0) {
+        // 複数メディアがある場合
+        postWithMedia.mediaItems.forEach((media, index) => {
+          mediaItems.push({
+            id: media.id,
+            uri: media.media_url,
+            type: media.is_video ? 'video' : 'photo',
+            fileName: media.is_video ? 'video.mp4' : 'photo.jpg',
+          });
+        });
+      } else if (postWithMedia.media_url) {
+        // 後方互換性: 単一メディアの場合
         mediaItems.push({
           id: '1',
-          uri: post.media_url,
-          type: post.is_video ? 'video' : 'photo',
-          fileName: post.is_video ? 'video.mp4' : 'photo.jpg',
+          uri: postWithMedia.media_url,
+          type: postWithMedia.is_video ? 'video' : 'photo',
+          fileName: postWithMedia.is_video ? 'video.mp4' : 'photo.jpg',
         });
       }
-      
+
+      console.log('Loaded media items:', mediaItems);
       setMediaItems(mediaItems);
 
     } catch (error) {
@@ -177,18 +188,27 @@ export default function EditPostScreen() {
   };
 
   const handleSubmit = async () => {
-
     if (!validateForm()) return;
 
     setLoading(true);
     try {
-      // 投稿データをSupabaseで更新
-      const updatedPost = await postService.updatePost(id as string, {
+      // 投稿の基本情報を更新
+      await postService.updatePost(id as string, {
         title: formData.title,
-        menu_name: formData.comment, // コメントをmenu_nameとして保存
+        menu_name: formData.comment,
+        // 後方互換性のため最初のメディアをmedia_urlに設定
         media_url: mediaItems.length > 0 ? mediaItems[0].uri : '',
         is_video: mediaItems.length > 0 ? mediaItems[0].type === 'video' : false,
       });
+
+      // 複数メディアを設定
+      const postMediaItems = mediaItems.map((item, index) => ({
+        media_url: item.uri,
+        is_video: item.type === 'video',
+        display_order: index,
+      }));
+
+      await postService.setPostMedia(id as string, postMediaItems);
 
       Alert.alert(
         '更新完了',

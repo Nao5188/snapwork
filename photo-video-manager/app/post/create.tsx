@@ -10,7 +10,6 @@ import {
   SafeAreaView,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
   FlatList,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -20,7 +19,6 @@ import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { postService, authService } from '@/lib/supabase';
 
-const { width } = Dimensions.get('window');
 
 interface MediaItem {
   id: string;
@@ -83,30 +81,30 @@ export default function CreatePostScreen() {
     }
   };
 
-  const selectMediaFromLibrary = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsMultipleSelection: true,
-        selectionLimit: 5 - mediaItems.length,
-        quality: 0.8,
-      });
+  // const selectMediaFromLibrary = async () => {
+  //   try {
+  //     const result = await ImagePicker.launchImageLibraryAsync({
+  //       mediaTypes: ImagePicker.MediaTypeOptions.All,
+  //       allowsMultipleSelection: true,
+  //       selectionLimit: 5 - mediaItems.length,
+  //       quality: 0.8,
+  //     });
 
-      if (!result.canceled && result.assets) {
-        const newMediaItems: MediaItem[] = result.assets.map((asset, index) => ({
-          id: `${Date.now()}_${index}`,
-          uri: asset.uri,
-          type: asset.type === 'video' ? 'video' : 'photo',
-          fileName: asset.fileName || `media_${Date.now()}_${index}`,
-        }));
+  //     if (!result.canceled && result.assets) {
+  //       const newMediaItems: MediaItem[] = result.assets.map((asset, index) => ({
+  //         id: `${Date.now()}_${index}`,
+  //         uri: asset.uri,
+  //         type: asset.type === 'video' ? 'video' : 'photo',
+  //         fileName: asset.fileName || `media_${Date.now()}_${index}`,
+  //       }));
 
-        setMediaItems(prev => [...prev, ...newMediaItems].slice(0, 5));
-      }
-    } catch (error) {
-      console.error('Error selecting media:', error);
-      Alert.alert('エラー', 'メディアの選択に失敗しました。');
-    }
-  };
+  //       setMediaItems(prev => [...prev, ...newMediaItems].slice(0, 5));
+  //     }
+  //   } catch (error) {
+  //     console.error('Error selecting media:', error);
+  //     Alert.alert('エラー', 'メディアの選択に失敗しました。');
+  //   }
+  // };
 
   const selectFromAlbum = () => {
     router.push('/gallery');

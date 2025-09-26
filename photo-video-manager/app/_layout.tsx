@@ -16,9 +16,19 @@ export default function RootLayout() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
-    // 初期認証状態チェック
+    // 初期認証状態チェック（自動ログイン含む）
     const checkAuthState = async () => {
       try {
+        // まず自動ログインを試行
+        const autoLoginResult = await authService.attemptAutoLogin();
+        
+        if (autoLoginResult.success) {
+          console.log('Auto login successful for:', autoLoginResult.email);
+          setIsAuthenticated(true);
+          return;
+        }
+
+        // 自動ログインが失敗した場合は通常の認証状態チェック
         const { data: { user } } = await authService.getCurrentUser();
         setIsAuthenticated(!!user);
       } catch (error) {
@@ -45,7 +55,7 @@ export default function RootLayout() {
 
     return () => {
       console.log('Cleaning up auth subscription');
-      subscription?.unsubscribe?.();
+      subscription?.data?.subscription?.unsubscribe();
     };
   }, []);
 

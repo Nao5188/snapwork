@@ -1,21 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  StyleSheet, 
-  FlatList, 
-  TouchableOpacity, 
-  Text, 
-  ScrollView,
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Text,
   Dimensions,
   Alert,
   TextInput,
-  Modal
+  Modal,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { authService, userService, postService } from '@/lib/supabase';
+import { authService, userService, postService, fileStorageService } from '@/lib/supabase';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
@@ -67,7 +69,9 @@ export default function ProfileScreen() {
       }
 
       // ユーザープロフィールを取得
+      console.log('Loading profile for user:', user.id);
       const profile = await userService.getProfile(user.id);
+      console.log('Profile data:', profile);
       
       // ユーザーの投稿を取得
       const posts = await postService.getUserPosts(user.id);
@@ -75,11 +79,44 @@ export default function ProfileScreen() {
       // 投稿数を取得
       const postsCount = await postService.getUserPostsCount(user.id);
       
+      // プロフィール写真のURL処理を改善
+      const avatarUrl = profile.avatar_url || 
+        `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=${encodeURIComponent(profile.display_name?.charAt(0) || 'U')}`;
+      
+      console.log('Setting user profile:', {
+        id: profile.id,
+        username: profile.username,
+        displayName: profile.display_name,
+        avatar: avatarUrl,
+        postsCount: postsCount,
+      });
+      
+      let finalAvatarUrl = avatarUrl;
+      
+      // ローカル画像を自動的にSupabase Storageにアップロード
+      if (avatarUrl && avatarUrl.startsWith('file://')) {
+        console.log('🔄 Auto-uploading local avatar to make it accessible to all users...');
+        try {
+          const publicUrl = await fileStorageService.uploadAvatar(profile.id, avatarUrl);
+          
+          // データベースを更新
+          await userService.updateProfile(profile.id, {
+            avatar_url: publicUrl,
+          });
+          
+          finalAvatarUrl = publicUrl;
+          console.log('✅ Avatar auto-upload successful:', publicUrl);
+        } catch (uploadError) {
+          console.warn('❌ Auto-upload failed, keeping local avatar for now:', uploadError);
+          // 失敗した場合はローカル画像をそのまま使用
+        }
+      }
+
       setUserProfile({
         id: profile.id,
         username: profile.username,
         displayName: profile.display_name,
-        avatar: profile.avatar_url || 'https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=' + profile.display_name.charAt(0),
+        avatar: finalAvatarUrl,
         postsCount: postsCount,
       });
 
@@ -97,7 +134,21 @@ export default function ProfileScreen() {
       setUserPosts(formattedPosts);
     } catch (error) {
       console.error('Error loading user profile:', error);
-      Alert.alert('エラー', 'プロフィールの読み込みに失敗しました。');
+      
+      // プロフィール取得に失敗した場合のフォールバック処理
+      const { data: { user: fallbackUser } } = await authService.getCurrentUser();
+      if (fallbackUser) {
+        console.log('Setting fallback profile for user:', fallbackUser.id);
+        setUserProfile({
+          id: fallbackUser.id,
+          username: `user_${fallbackUser.id.slice(-6)}`,
+          displayName: `ユーザー${fallbackUser.id.slice(-4)}`,
+          avatar: `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=U`,
+          postsCount: 0,
+        });
+      }
+      
+      Alert.alert('警告', 'プロフィール情報の一部を読み込めませんでした。');
     } finally {
       setLoading(false);
     }
@@ -132,37 +183,73 @@ export default function ProfileScreen() {
   const handleSaveProfile = async () => {
     if (!userProfile) return;
     
+    setUploading(true);
+    
     if (!editDisplayName.trim()) {
       Alert.alert('エラー', '表示名を入力してください。');
+      setUploading(false);
       return;
     }
     if (!editUsername.trim()) {
       Alert.alert('エラー', 'ユーザー名を入力してください。');
+      setUploading(false);
       return;
     }
     if (editUsername.length < 3) {
       Alert.alert('エラー', 'ユーザー名は3文字以上で入力してください。');
+      setUploading(false);
       return;
     }
 
-    setUploading(true);
     try {
       // ユーザー名の重複チェック
-      const isAvailable = await userService.checkUsernameAvailability(editUsername.trim().toLowerCase(), userProfile.id);
-      if (!isAvailable) {
+      const isUsernameAvailable = await userService.checkUsernameAvailability(editUsername.trim().toLowerCase(), userProfile.id);
+      if (!isUsernameAvailable) {
         Alert.alert('エラー', 'このユーザー名は既に使用されています。');
+        setUploading(false);
+        return;
+      }
+
+      // 表示名の重複チェック
+      const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(editDisplayName.trim(), userProfile.id);
+      if (!isDisplayNameAvailable) {
+        Alert.alert('エラー', 'この表示名は既に使用されています。');
         setUploading(false);
         return;
       }
 
       let avatarUrl = userProfile.avatar;
       
-      // 新しい画像が選択されている場合はアップロード
+      // 新しい画像が選択されている場合の処理
       if (editAvatar && editAvatar !== userProfile.avatar) {
-        // 実際のアップロード処理はSupabaseのストレージ設定が必要
-        // ここでは仮のURLを設定
-        avatarUrl = editAvatar;
+        console.log('New avatar selected:', editAvatar);
+        
+        try {
+          // ローカル画像をSupabase Storageにアップロード
+          console.log('Uploading avatar to Supabase Storage...');
+          avatarUrl = await fileStorageService.uploadAvatar(userProfile.id, editAvatar);
+          console.log('Avatar uploaded successfully:', avatarUrl);
+          
+          // 古いアバター画像を削除（もしあれば）
+          if (userProfile.avatar && !userProfile.avatar.startsWith('file://') && !userProfile.avatar.includes('placeholder')) {
+            try {
+              await fileStorageService.deleteAvatar(userProfile.avatar);
+            } catch (deleteError) {
+              console.warn('Failed to delete old avatar:', deleteError);
+            }
+          }
+        } catch (uploadError) {
+          console.error('Avatar upload failed:', uploadError);
+          Alert.alert(
+            'アップロードエラー', 
+            'プロフィール画像のアップロードに失敗しました。インターネット接続を確認してもう一度お試しください。'
+          );
+          setUploading(false);
+          return;
+        }
       }
+      
+      console.log('Final avatar URL:', avatarUrl);
 
       // プロフィールを更新
       await userService.updateProfile(userProfile.id, {
@@ -171,12 +258,15 @@ export default function ProfileScreen() {
         avatar_url: avatarUrl,
       });
 
-      setUserProfile(prev => prev ? {
-        ...prev,
+      const updatedProfile = {
+        ...userProfile,
         displayName: editDisplayName.trim(),
         username: editUsername.trim().toLowerCase(),
         avatar: avatarUrl
-      } : null);
+      };
+      
+      console.log('Updating local profile state:', updatedProfile);
+      setUserProfile(updatedProfile);
       
       setIsEditModalVisible(false);
       Alert.alert('成功', 'プロフィールを更新しました。');
@@ -187,6 +277,7 @@ export default function ProfileScreen() {
       setUploading(false);
     }
   };
+
 
   const handleLogout = () => {
     Alert.alert(
@@ -218,24 +309,37 @@ export default function ProfileScreen() {
     setEditAvatar(null);
   };
 
+  const handleEditPost = (postId: string) => {
+    router.push(`/post/edit/${postId}`);
+  };
+
 
   const renderPostItem = ({ item }: { item: UserPost }) => (
-    <TouchableOpacity 
-      style={styles.postItem}
-      onPress={() => Alert.alert('投稿詳細', `タイトル: ${item.title}\nメニュー: ${item.menuName}`)}
-      activeOpacity={0.9}
-    >
-      <Image
-        source={{ uri: item.mediaUri }}
-        style={styles.postImage}
-        contentFit="cover"
-      />
-      {item.isVideo && (
-        <View style={styles.videoIndicator}>
-          <Ionicons name="play" size={16} color="white" />
-        </View>
-      )}
-    </TouchableOpacity>
+    <View style={styles.postItem}>
+      <TouchableOpacity
+        style={styles.postImageContainer}
+        onPress={() => Alert.alert('投稿詳細', `タイトル: ${item.title}\nメニュー: ${item.menuName}`)}
+        activeOpacity={0.9}
+      >
+        <Image
+          source={{ uri: item.mediaUri }}
+          style={styles.postImage}
+          contentFit="cover"
+        />
+        {item.isVideo && (
+          <View style={styles.videoIndicator}>
+            <Ionicons name="play" size={16} color="white" />
+          </View>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.editPostButton}
+        onPress={() => handleEditPost(item.id)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="create-outline" size={18} color="white" />
+      </TouchableOpacity>
+    </View>
   );
 
   const renderHeader = () => {
@@ -251,7 +355,9 @@ export default function ProfileScreen() {
           />
         </View>
         
-        <Text style={styles.displayName}>{userProfile.displayName}</Text>
+        <Text style={styles.displayName}>
+          {userProfile.displayName || userProfile.username || 'ユーザー'}
+        </Text>
         
         <View style={styles.statsContainer}>
           <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
@@ -311,7 +417,10 @@ export default function ProfileScreen() {
         visible={isEditModalVisible}
         onRequestClose={handleCancelEdit}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={handleCancelEdit}>
@@ -324,8 +433,13 @@ export default function ProfileScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            
-            <View style={styles.modalBody}>
+
+            <ScrollView
+              style={styles.modalBody}
+              contentContainerStyle={styles.modalBodyContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <View style={styles.avatarEditContainer}>
                 <TouchableOpacity onPress={handleSelectAvatar} activeOpacity={0.8}>
                   <View style={styles.avatarEditWrapper}>
@@ -352,7 +466,7 @@ export default function ProfileScreen() {
                   maxLength={30}
                 />
               </View>
-              
+
               <View style={styles.inputContainer}>
                 <Text style={styles.inputLabel}>ユーザー名</Text>
                 <TextInput
@@ -365,9 +479,9 @@ export default function ProfileScreen() {
                 />
                 <Text style={styles.inputHint}>3文字以上、英数字とアンダースコアのみ</Text>
               </View>
-            </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -484,7 +598,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingBottom: 20,
+    maxHeight: '90%',
+    minHeight: '50%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -513,8 +628,12 @@ const styles = StyleSheet.create({
     color: '#b3b3b3',
   },
   modalBody: {
+    flex: 1,
+  },
+  modalBodyContent: {
     paddingHorizontal: 20,
     paddingTop: 20,
+    paddingBottom: 30,
   },
   inputContainer: {
     marginBottom: 20,
@@ -578,10 +697,26 @@ const styles = StyleSheet.create({
     margin: 1,
     position: 'relative',
   },
+  postImageContainer: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  },
   postImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#f0f0f0',
+  },
+  editPostButton: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 16,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   videoIndicator: {
     position: 'absolute',

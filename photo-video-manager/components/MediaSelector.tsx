@@ -72,14 +72,16 @@ export default function MediaSelector({
         first: 100,
       });
 
-      const formattedAssets: MediaAsset[] = media.assets.map((asset) => ({
-        id: asset.id,
-        filename: asset.filename,
-        uri: asset.uri,
-        mediaType: asset.mediaType,
-        creationTime: asset.creationTime,
-        duration: asset.duration,
-      }));
+      const formattedAssets: MediaAsset[] = media.assets
+        .filter(asset => asset.mediaType !== 'audio')
+        .map((asset) => ({
+          id: asset.id,
+          filename: asset.filename,
+          uri: asset.uri,
+          mediaType: asset.mediaType === 'video' ? 'video' : 'photo',
+          creationTime: asset.creationTime,
+          duration: asset.duration || undefined,
+        }));
 
       setAssets(formattedAssets);
     } catch (error) {
@@ -141,7 +143,7 @@ export default function MediaSelector({
           uri: asset.uri,
           mediaType: asset.type === 'video' ? 'video' : 'photo',
           creationTime: Date.now(),
-          duration: asset.duration,
+          duration: asset.duration || undefined,
         };
 
         setAssets(prev => [newAsset, ...prev]);

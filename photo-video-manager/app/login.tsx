@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,8 +11,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
 import { authService, userService } from '../lib/supabase';
+import { storageService } from '../lib/storage';
 
 export default function LoginScreen() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -25,6 +25,27 @@ export default function LoginScreen() {
   });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+
+  // コンポーネントマウント時にRemember Me設定を読み込み
+  useEffect(() => {
+    const loadRememberMeSettings = async () => {
+      try {
+        const rememberMeData = await storageService.getRememberMe();
+        if (rememberMeData) {
+          setRememberMe(rememberMeData.rememberMe);
+          setFormData(prev => ({
+            ...prev,
+            email: rememberMeData.email,
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to load remember me settings:', error);
+      }
+    };
+
+    loadRememberMeSettings();
+  }, []);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -94,6 +115,14 @@ export default function LoginScreen() {
           return;
         }
 
+        // 表示名の重複チェック
+        const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(formData.displayName);
+        if (!isDisplayNameAvailable) {
+          Alert.alert('入力エラー', 'この表示名は既に使用されています。');
+          setLoading(false);
+          return;
+        }
+
         // サインアップ処理
         console.log('Calling authService.signUp...');
         const result = await authService.signUp(
@@ -129,7 +158,7 @@ export default function LoginScreen() {
       } else {
         // ログイン処理
         console.log('Starting signin process...');
-        const result = await authService.signIn(formData.email, formData.password);
+        const result = await authService.signIn(formData.email, formData.password, rememberMe);
         console.log('SignIn result:', result);
         
         Alert.alert(
@@ -147,12 +176,23 @@ export default function LoginScreen() {
         errorMessage = 'メールアドレスまたはパスワードが正しくありません。';
       } else if (error.message?.includes('User already registered')) {
         errorMessage = 'このメールアドレスは既に登録されています。';
+      } else if (error.message?.includes('Username already exists')) {
+        errorMessage = 'このユーザー名は既に使用されています。';
+      } else if (error.message?.includes('Display name already exists')) {
+        errorMessage = 'この表示名は既に使用されています。';
+      } else if (error.message?.includes('For security purposes, you can only request this after')) {
+        // レートリミットエラー
+        const match = error.message.match(/after (\d+) seconds?/);
+        const seconds = match ? match[1] : '少し';
+        errorMessage = `セキュリティのため、${seconds}秒後に再試行してください。\n\n短時間に複数回の登録試行があったため、一時的に制限されています。`;
       } else if (error.message?.includes('Password should be')) {
         errorMessage = 'パスワードは6文字以上で入力してください。';
       } else if (error.message?.includes('Unable to validate email address')) {
         errorMessage = '正しいメールアドレスを入力してください。';
       } else if (error.message?.includes('Email not confirmed')) {
         errorMessage = 'メールアドレスが確認されていません。送信されたメールから認証を完了してからログインしてください。';
+      } else if (error.message?.includes('rate limit')) {
+        errorMessage = 'リクエストが多すぎます。しばらく待ってから再試行してください。';
       }
       
       Alert.alert('エラー', errorMessage);
@@ -170,6 +210,7 @@ export default function LoginScreen() {
       displayName: '',
       username: '',
     });
+    setRememberMe(false);
   };
 
   return (
@@ -266,6 +307,22 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
               />
+            </View>
+          )}
+
+          {!isSignUp && (
+            <View style={styles.rememberMeContainer}>
+              <TouchableOpacity
+                style={styles.checkboxContainer}
+                onPress={() => setRememberMe(!rememberMe)}
+              >
+                <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
+                  {rememberMe && (
+                    <Ionicons name="checkmark" size={14} color="#ffffff" />
+                  )}
+                </View>
+                <Text style={styles.rememberMeText}>ログイン状態を保持する</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -419,5 +476,33 @@ const styles = StyleSheet.create({
     color: '#8e8e8e',
     textAlign: 'center',
     lineHeight: 16,
+  },
+  rememberMeContainer: {
+    marginBottom: 8,
+    marginTop: 8,
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderWidth: 2,
+    borderColor: '#dbdbdb',
+    borderRadius: 3,
+    marginRight: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fafafa',
+  },
+  checkboxChecked: {
+    backgroundColor: '#0095f6',
+    borderColor: '#0095f6',
+  },
+  rememberMeText: {
+    fontSize: 14,
+    color: '#262626',
+    fontWeight: '500',
   },
 });

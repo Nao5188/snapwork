@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Alert, Text } from 'react-native';
 import { Camera, CameraView, CameraType, FlashMode } from 'expo-camera';
-import { Video } from 'expo-av';
 import * as MediaLibrary from 'expo-media-library';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -9,19 +8,36 @@ import { mediaLibraryService, authService } from '@/lib/supabase';
 
 export default function CameraScreen() {
   const router = useRouter();
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [cameraType, setCameraType] = useState<CameraType>('back');
   const [flashMode, setFlashMode] = useState<FlashMode>('off');
   const [isRecording, setIsRecording] = useState(false);
-  const [recordedVideo, setRecordedVideo] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<'photo' | 'video'>('photo');
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const cameraRef = useRef<CameraView>(null);
 
   useEffect(() => {
+    checkAuthStatus();
     getCameraPermissions();
   }, []);
+
+  const checkAuthStatus = async () => {
+    try {
+      const { data: { user } } = await authService.getCurrentUser();
+      setIsAuthenticated(!!user);
+      
+      if (!user) {
+        console.log('User not authenticated, redirecting to login');
+        router.replace('/login');
+      }
+    } catch (error) {
+      console.error('Auth check error:', error);
+      setIsAuthenticated(false);
+      router.replace('/login');
+    }
+  };
 
   const getCameraPermissions = async () => {
     try {
@@ -158,19 +174,16 @@ export default function CameraScreen() {
         } else {
           console.log('Starting video recording...');
           
-          // カメラが準備できていない場合は少し待機してからリトライ
+          // カメラの準備状態を確認し、準備ができていない場合は待機
           if (!isCameraReady) {
-            console.log('Camera not ready, waiting and trying anyway...');
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            // 準備状態を強制的にtrueにしてみる
-            setIsCameraReady(true);
+            console.log('Camera not ready, waiting for camera to be ready...');
+            Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
+            return;
           }
           
           setIsRecording(true);
           const video = await cameraRef.current.recordAsync({
             maxDuration: 60, // 最大60秒
-            mute: false,
-            quality: '720p', // 品質を指定
           });
           
           console.log('Recording completed:', video);
@@ -184,7 +197,6 @@ export default function CameraScreen() {
             // アプリのライブラリにも登録
             await saveToAppLibrary(video.uri, true);
             
-            setRecordedVideo(video.uri);
             Alert.alert('動画を保存しました!', 'アルバムに保存されました。', [
               { text: '続けて撮影', style: 'cancel' },
               { 
@@ -196,11 +208,11 @@ export default function CameraScreen() {
         }
       } catch (error) {
         console.error('動画録画エラー:', error);
-        console.error('Error details:', error.message);
+        console.error('Error details:', error instanceof Error ? error.message : String(error));
         setIsRecording(false);
         
         // カメラが準備できていない場合のリトライ処理（最大3回まで）
-        if (error.message.includes('Camera is not ready') && retryCount < 3) {
+        if (error instanceof Error && error.message.includes('Camera is not ready') && retryCount < 3) {
           console.log(`Camera not ready, retrying... (attempt ${retryCount + 1}/3)`);
           setRetryCount(prev => prev + 1);
           
@@ -235,6 +247,11 @@ export default function CameraScreen() {
     setIsCameraReady(false); // カメラ切り替え時は準備状態をリセット
     setRetryCount(0); // リトライカウントもリセット
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
+    
+    // カメラ切り替え後の準備状態リセット
+    setTimeout(() => {
+      console.log('Camera type switched, waiting for camera to be ready...');
+    }, 100);
   };
 
   const toggleFlash = () => {
@@ -252,6 +269,35 @@ export default function CameraScreen() {
       return newMode;
     });
   };
+
+  // 認証状態確認中
+  if (isAuthenticated === null) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>認証状態を確認中...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // 未認証の場合（念のため）
+  if (!isAuthenticated) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.permissionContainer}>
+          <Ionicons name="person-outline" size={80} color="#666" />
+          <Text style={styles.permissionTitle}>ログインが必要です</Text>
+          <Text style={styles.permissionText}>
+            カメラ機能を使用するにはログインしてください。
+          </Text>
+          <TouchableOpacity style={styles.button} onPress={() => router.replace('/login')}>
+            <Text style={styles.buttonText}>ログイン画面へ</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   if (hasPermission === null) {
     return <View style={styles.container}><Text>カメラの権限を確認中...</Text></View>;
@@ -291,7 +337,11 @@ export default function CameraScreen() {
           setTimeout(() => {
             setIsCameraReady(true);
             console.log('Camera ready state set to true');
-          }, 500);
+          }, 1000);
+        }}
+        onMountError={(error) => {
+          console.error('Camera mount error:', error);
+          setIsCameraReady(false);
         }}
       >
         {/* Top Controls */}
@@ -323,7 +373,11 @@ export default function CameraScreen() {
                 setCurrentMode('photo');
                 // モード切り替え時はカメラ状態をリセット
                 setIsCameraReady(false);
-                setTimeout(() => setIsCameraReady(true), 300);
+                setRetryCount(0);
+                // カメラの準備完了を待つ
+                setTimeout(() => {
+                  console.log('Photo mode selected, camera should be ready soon...');
+                }, 300);
               }}
               activeOpacity={0.8}
             >
@@ -336,7 +390,11 @@ export default function CameraScreen() {
                 setCurrentMode('video');
                 // モード切り替え時はカメラ状態をリセット
                 setIsCameraReady(false);
-                setTimeout(() => setIsCameraReady(true), 300);
+                setRetryCount(0);
+                // カメラの準備完了を待つ
+                setTimeout(() => {
+                  console.log('Video mode selected, camera should be ready soon...');
+                }, 300);
               }}
               activeOpacity={0.8}
             >

@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { storageService } from './storage';
+import { storageService as localStorageService } from './storage';
 
 // Supabase設定
 // 本番環境では環境変数を使用してください
@@ -31,26 +31,147 @@ export interface Post {
   updated_at: string;
 }
 
+export interface PostMedia {
+  id: string;
+  post_id: string;
+  media_url: string;
+  is_video: boolean;
+  display_order: number;
+  created_at: string;
+}
+
+// ファイルアップロード関連の操作
+export const fileStorageService = {
+  // アバター画像をアップロード
+  async uploadAvatar(userId: string, imageUri: string) {
+    try {
+      console.log('Uploading avatar for user:', userId);
+      console.log('Image URI:', imageUri);
+
+      // ローカルファイルを読み込み
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      
+      // ファイル拡張子を取得
+      const fileExtension = imageUri.split('.').pop() || 'jpg';
+      const fileName = `avatar_${userId}_${Date.now()}.${fileExtension}`;
+      
+      console.log('Uploading file:', fileName);
+
+      // Supabase Storageにアップロード
+      const { data, error } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, blob, {
+          contentType: `image/${fileExtension}`,
+          upsert: true
+        });
+
+      if (error) {
+        console.error('Upload error:', error);
+        throw error;
+      }
+
+      console.log('Upload successful:', data);
+
+      // 公開URLを取得
+      const { data: publicUrlData } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      const publicUrl = publicUrlData.publicUrl;
+      console.log('Public URL:', publicUrl);
+
+      return publicUrl;
+    } catch (error) {
+      console.error('Failed to upload avatar:', error);
+      throw error;
+    }
+  },
+
+  // 古いアバター画像を削除
+  async deleteAvatar(avatarUrl: string) {
+    try {
+      if (!avatarUrl || avatarUrl.startsWith('file://') || avatarUrl.includes('placeholder')) {
+        return; // ローカルファイルやプレースホルダーは削除しない
+      }
+
+      // URLからファイル名を抽出
+      const url = new URL(avatarUrl);
+      const pathSegments = url.pathname.split('/');
+      const fileName = pathSegments[pathSegments.length - 1];
+
+      console.log('Deleting old avatar:', fileName);
+
+      const { error } = await supabase.storage
+        .from('avatars')
+        .remove([fileName]);
+
+      if (error) {
+        console.error('Delete error:', error);
+        // 削除エラーは致命的でないので続行
+      }
+    } catch (error) {
+      console.error('Failed to delete avatar:', error);
+      // 削除エラーは致命的でないので続行
+    }
+  },
+};
+
 // ユーザー関連の操作
 export const userService = {
   // ユーザープロフィール取得
   async getProfile(userId: string) {
+    console.log('Getting profile for user:', userId);
     const { data, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
       .single();
     
-    if (error) throw error;
+    if (error) {
+      console.error('Profile fetch error:', error);
+      throw error;
+    }
+    
+    console.log('Profile fetched:', data);
     return data;
   },
 
   // プロフィール更新
   async updateProfile(userId: string, updates: Partial<User>) {
+    // 既存のプロフィールを取得
+    const { data: currentProfile } = await supabase
+      .from('users')
+      .select('avatar_url')
+      .eq('id', userId)
+      .single();
+
+    // アバターURLがローカルファイルパスの場合、自動的にSupabase Storageにアップロード
+    let finalUpdates = { ...updates };
+    if (updates.avatar_url && updates.avatar_url.startsWith('file://')) {
+      try {
+        console.log('Auto-uploading local avatar to Supabase Storage:', updates.avatar_url);
+        const publicUrl = await fileStorageService.uploadAvatar(userId, updates.avatar_url);
+        finalUpdates.avatar_url = publicUrl;
+        
+        // 古い画像を削除（もしあれば）
+        if (currentProfile?.avatar_url && !currentProfile.avatar_url.startsWith('file://') && !currentProfile.avatar_url.includes('placeholder')) {
+          try {
+            await fileStorageService.deleteAvatar(currentProfile.avatar_url);
+          } catch (deleteError) {
+            console.warn('Failed to delete old avatar:', deleteError);
+          }
+        }
+      } catch (uploadError) {
+        console.warn('Failed to auto-upload avatar, using original URL:', uploadError);
+        // アップロードに失敗した場合は元のURLを使用
+      }
+    }
+
     const { data, error } = await supabase
       .from('users')
       .update({
-        ...updates,
+        ...finalUpdates,
         updated_at: new Date().toISOString(),
       })
       .eq('id', userId)
@@ -92,6 +213,107 @@ export const userService = {
     
     if (error) throw error;
     return data.length === 0;
+  },
+
+  // 欠落しているユーザープロフィールを作成（通常のアプリ内では使用しない）
+  async createMissingUserProfile(userId: string, email?: string) {
+    try {
+      console.log(`🔍 Checking for existing profile for user: ${userId}`);
+      
+      // 既存プロフィールをチェック（完全なデータを取得）
+      const { data: existingProfile, error: checkError } = await supabase
+        .from('users')
+        .select('id, username, display_name, avatar_url, email')
+        .eq('id', userId)
+        .single();
+
+      if (checkError && checkError.code !== 'PGRST116') { // PGRST116は行が見つからないエラー
+        console.error('Error checking for existing profile:', checkError);
+        throw checkError;
+      }
+
+      if (existingProfile) {
+        console.log(`✅ Profile already exists for ${userId}:`, existingProfile);
+        return existingProfile; // 既に存在する場合はそのまま返す
+      }
+
+      console.log(`❌ No profile found for ${userId}. RLS prevents profile creation from client.`);
+      console.log(`⚠️  Please run the fixMissingUserProfiles.js script with service role key.`);
+      
+      // RLSポリシーにより通常のクライアントからは作成できないため、nullを返す
+      return null;
+    } catch (error) {
+      console.error('❌ Failed to create missing user profile:', error);
+      return null;
+    }
+  },
+
+  // 既存のローカル画像を一括でSupabase Storageに移行
+  async migrateLocalAvatarsToStorage() {
+    try {
+      console.log('Starting avatar migration to Supabase Storage...');
+      
+      // ローカルファイルパスを持つユーザーを取得
+      const { data: usersWithLocalAvatars, error } = await supabase
+        .from('users')
+        .select('id, avatar_url, username')
+        .like('avatar_url', 'file://%');
+
+      if (error) {
+        console.error('Failed to fetch users with local avatars:', error);
+        return { success: false, error };
+      }
+
+      if (!usersWithLocalAvatars || usersWithLocalAvatars.length === 0) {
+        console.log('No users with local avatars found');
+        return { success: true, migrated: 0 };
+      }
+
+      console.log(`Found ${usersWithLocalAvatars.length} users with local avatars`);
+      
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const user of usersWithLocalAvatars) {
+        try {
+          console.log(`Migrating avatar for user ${user.username} (${user.id})`);
+          
+          // ローカル画像をアップロード
+          const publicUrl = await fileStorageService.uploadAvatar(user.id, user.avatar_url);
+          
+          // データベースを更新
+          const { error: updateError } = await supabase
+            .from('users')
+            .update({ 
+              avatar_url: publicUrl,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', user.id);
+
+          if (updateError) {
+            console.error(`Failed to update user ${user.id}:`, updateError);
+            errorCount++;
+          } else {
+            console.log(`Successfully migrated avatar for user ${user.username}`);
+            successCount++;
+          }
+        } catch (migrationError) {
+          console.error(`Failed to migrate avatar for user ${user.id}:`, migrationError);
+          errorCount++;
+        }
+      }
+
+      console.log(`Migration completed: ${successCount} success, ${errorCount} errors`);
+      return { 
+        success: true, 
+        migrated: successCount, 
+        errors: errorCount,
+        total: usersWithLocalAvatars.length 
+      };
+    } catch (error) {
+      console.error('Avatar migration failed:', error);
+      return { success: false, error };
+    }
   },
 };
 
@@ -215,8 +437,112 @@ export const postService = {
       .from('posts')
       .delete()
       .eq('id', postId);
-    
+
     if (error) throw error;
+  },
+
+  // 投稿のメディアを取得
+  async getPostMedia(postId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('post_media')
+        .select('*')
+        .eq('post_id', postId)
+        .order('display_order', { ascending: true });
+
+      if (error) {
+        // post_mediaテーブルが存在しない場合は空配列を返す
+        console.warn('post_media table not found, returning empty array:', error.message);
+        return [];
+      }
+      return data || [];
+    } catch (error) {
+      console.warn('Error accessing post_media table:', error);
+      return [];
+    }
+  },
+
+  // 投稿のメディアを設定（既存を削除して新規追加）
+  async setPostMedia(postId: string, mediaItems: Array<{
+    media_url: string;
+    is_video: boolean;
+    display_order: number;
+  }>) {
+    try {
+      // まず既存のメディアを削除
+      const { error: deleteError } = await supabase
+        .from('post_media')
+        .delete()
+        .eq('post_id', postId);
+
+      if (deleteError) {
+        console.warn('Error deleting post_media, table may not exist:', deleteError.message);
+        // テーブルが存在しない場合は処理を続行
+        if (!deleteError.message.includes('does not exist') && !deleteError.message.includes('not found')) {
+          throw deleteError;
+        }
+      }
+
+      // 新しいメディアを追加
+      if (mediaItems.length > 0) {
+        const { data, error: insertError } = await supabase
+          .from('post_media')
+          .insert(
+            mediaItems.map(item => ({
+              post_id: postId,
+              ...item,
+              created_at: new Date().toISOString(),
+            }))
+          )
+          .select();
+
+        if (insertError) {
+          console.warn('Error inserting post_media, table may not exist:', insertError.message);
+          // テーブルが存在しない場合は空配列を返す
+          if (insertError.message.includes('does not exist') || insertError.message.includes('not found')) {
+            return [];
+          }
+          throw insertError;
+        }
+        return data;
+      }
+
+      return [];
+    } catch (error) {
+      console.warn('Error in setPostMedia:', error);
+      return [];
+    }
+  },
+
+  // 複数メディア対応の投稿取得
+  async getPostWithMedia(postId: string) {
+    const [post, mediaItems] = await Promise.all([
+      this.getPost(postId),
+      this.getPostMedia(postId)
+    ]);
+
+    return {
+      ...post,
+      mediaItems
+    };
+  },
+
+  // 複数メディア対応のユーザー投稿一覧取得
+  async getUserPostsWithMedia(userId: string) {
+    const posts = await this.getUserPosts(userId);
+
+    // 各投稿のメディアを取得
+    const postsWithMedia = await Promise.all(
+      posts.map(async (post) => {
+        const mediaItems = await this.getPostMedia(post.id);
+        return {
+          ...post,
+          mediaItems
+        };
+      })
+    );
+
+    return postsWithMedia;
   },
 };
 
@@ -310,6 +636,9 @@ export const authService = {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
+      options: {
+        emailRedirectTo: undefined, // メール確認リダイレクトを無効化
+      }
     });
     
     if (error) throw error;
@@ -326,6 +655,9 @@ export const authService = {
     
     // ユーザープロフィールをusersテーブルに作成
     try {
+      console.log('Creating user profile for:', data.user.id);
+      console.log('Session after signUp:', data.session ? 'Available' : 'Not available');
+      
       const { error: insertError } = await supabase.from('users').insert({
         id: data.user.id,
         email,
@@ -337,10 +669,34 @@ export const authService = {
       
       if (insertError) {
         console.error('User profile creation error:', insertError);
+        
+        // RLSエラーの場合は説明付きエラー
+        if (insertError.code === '42501') {
+          throw new Error(
+            'アカウント作成が完了しませんでした。データベースの設定に問題があります。\n\n' +
+            '解決方法:\n' +
+            '1. Supabase Dashboard → Table Editor → users テーブル\n' +
+            '2. RLS タブで以下のポリシーを追加:\n' +
+            '   CREATE POLICY "Users can insert own profile" ON users\n' +
+            '   FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);'
+          );
+        }
+        
         throw insertError;
       }
+      
+      console.log('✅ User profile created successfully');
     } catch (profileError) {
       console.error('Failed to create user profile:', profileError);
+      
+      // 認証ユーザーをクリーンアップ（プロフィール作成に失敗した場合）
+      try {
+        await supabase.auth.signOut();
+        console.log('Cleaned up failed user account');
+      } catch (cleanupError) {
+        console.error('Failed to cleanup user account:', cleanupError);
+      }
+      
       throw profileError;
     }
     
@@ -356,32 +712,31 @@ export const authService = {
     
     if (error) throw error;
     
-    // ログイン時にusersテーブルにプロフィールが存在するか確認し、なければ作成
+    // ログイン時にusersテーブルにプロフィールが存在するか確認
     if (data.user) {
-      const { data: profile } = await supabase
+      console.log('Checking for existing profile for user:', data.user.id);
+      
+      const { data: profile, error: profileCheckError } = await supabase
         .from('users')
-        .select('id')
+        .select('id, username, display_name, email')
         .eq('id', data.user.id)
         .single();
       
+      if (profileCheckError && profileCheckError.code !== 'PGRST116') {
+        console.error('Error checking profile:', profileCheckError);
+      }
+
       if (!profile) {
-        try {
-          await supabase.from('users').insert({
-            id: data.user.id,
-            email: data.user.email || '',
-            username: data.user.email?.split('@')[0] || 'user',
-            display_name: data.user.email?.split('@')[0] || 'User',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
-        } catch (profileError) {
-          console.error('Failed to create user profile on signin:', profileError);
-        }
+        console.error('❌ No profile found for authenticated user. This should not happen.');
+        console.error('💡 The user may have been created without proper profile setup.');
+        throw new Error('ユーザープロフィールが見つかりません。アカウントが正しく作成されていない可能性があります。');
+      } else {
+        console.log('✅ Profile found:', profile);
       }
 
       // Remember Me設定を保存
       try {
-        await storageService.setRememberMe(email, rememberMe);
+        await localStorageService.setRememberMe(email, rememberMe);
       } catch (storageError) {
         console.error('Failed to save remember me setting:', storageError);
       }
@@ -394,7 +749,7 @@ export const authService = {
   async signOut() {
     // Remember Me設定をクリア
     try {
-      await storageService.clearRememberMe();
+      await localStorageService.clearRememberMe();
     } catch (storageError) {
       console.error('Failed to clear remember me setting:', storageError);
     }
@@ -416,7 +771,7 @@ export const authService = {
   // 自動ログインを試行
   async attemptAutoLogin() {
     try {
-      const rememberMeData = await storageService.getRememberMe();
+      const rememberMeData = await localStorageService.getRememberMe();
       
       if (!rememberMeData || !rememberMeData.autoLoginEnabled) {
         return { success: false, reason: 'Auto login not enabled' };
@@ -427,7 +782,7 @@ export const authService = {
       
       if (error || !user) {
         // セッションが無効の場合はRemember Me設定をクリア
-        await storageService.clearRememberMe();
+        await localStorageService.clearRememberMe();
         return { success: false, reason: 'No valid session' };
       }
 

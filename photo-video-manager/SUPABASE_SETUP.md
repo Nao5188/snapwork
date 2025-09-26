@@ -131,14 +131,16 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...（長い文字列）
 ### 5.2 設定値を入力
 ```bash
 # Supabase Configuration
-EXPO_PUBLIC_SUPABASE_URL=https://あなたのプロジェクトID.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=あなたのanon-public-key
+EXPO_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_public_key_here
 ```
 
-### 5.3 具体的な置き換え手順
-1. `https://あなたのプロジェクトID.supabase.co` を **実際のProject URL** に置き換え
-2. `あなたのanon-public-key` を **実際のAPIキー** に置き換え
-3. ファイルを **保存**（Ctrl+S）
+### 5.3 設定完了
+以下は記入例です。実際の値はリポジトリにコミットせず、ローカルの `.env.local` だけに保存してください：
+1. **Project URL**: `https://your-project-id.supabase.co`
+2. **API Key**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`
+3. **Database Password**: `REDACTED_DATABASE_PASSWORD`
+4. ファイルを **保存**（Ctrl+S）
 
 ---
 

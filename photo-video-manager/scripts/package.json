@@ -1,0 +1,14 @@
+{
+  "name": "test-user-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for creating test users",
+  "main": "createTestUsers.js",
+  "scripts": {
+    "create-test-users": "node createTestUsers.js",
+    "help": "echo 'Available commands:' && echo '  npm run create-test-users - Create test users in database'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "dotenv": "^16.0.0"
+  }
+}

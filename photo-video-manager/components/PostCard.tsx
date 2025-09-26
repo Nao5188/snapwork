@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  FlatList,
   Dimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -11,16 +12,32 @@ import { Ionicons } from '@expo/vector-icons';
 
 const { width } = Dimensions.get('window');
 
+
+interface MediaItem {
+  id: string;
+  mediaUrl: string;
+  isVideo: boolean;
+  displayOrder: number;
+}
+
+interface UserProfile {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url?: string;
+}
+
 interface Post {
   id: string;
   title: string;
   menuName: string;
-  mediaUri: string;
+  mediaUri: string; // 後方互換性のため残す
+  mediaItems?: MediaItem[]; // 新しい複数メディア対応
   isVideo: boolean;
-  likesCount: number;
   createdAt: Date;
   shootingDate: Date;
   description?: string;
+  userProfile?: UserProfile; // ユーザープロフィール情報
 }
 
 interface PostCardProps {
@@ -29,14 +46,16 @@ interface PostCardProps {
   onEdit?: () => void;
   onDelete?: () => void;
   showActions?: boolean;
+  showProfile?: boolean;
 }
 
-export default function PostCard({ 
-  post, 
-  onPress, 
-  onEdit, 
-  onDelete, 
-  showActions = false 
+export default function PostCard({
+  post,
+  onPress,
+  onEdit,
+  onDelete,
+  showActions = false,
+  showProfile = true
 }: PostCardProps) {
   const formatDate = (date: Date) => {
     return `${date.getFullYear()}/${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`;
@@ -47,40 +66,149 @@ export default function PostCard({
   };
 
   const canEdit = () => {
-    const daysSincePost = (Date.now() - post.createdAt.getTime()) / (1000 * 60 * 60 * 24);
-    return daysSincePost <= 7; // 7日間以内のみ編集可能
+    const now = Date.now();
+    const postTime = post.createdAt.getTime();
+    const daysSincePost = (now - postTime) / (1000 * 60 * 60 * 24);
+    const canEditPost = daysSincePost <= 30; // 30日間に延長してテスト
+
+    console.log('=== EDIT CHECK ===');
+    console.log('Post ID:', post.id);
+    console.log('Current time:', new Date(now).toLocaleString());
+    console.log('Post created:', new Date(postTime).toLocaleString());
+    console.log('Days since post:', daysSincePost.toFixed(2));
+    console.log('Can edit (≤30 days):', canEditPost);
+    console.log('==================');
+
+    return canEditPost;
   };
 
+  // 複数メディアまたは単一メディアを取得
+  const getMediaItems = (): MediaItem[] => {
+    if (post.mediaItems && post.mediaItems.length > 0) {
+      return post.mediaItems.sort((a, b) => a.displayOrder - b.displayOrder);
+    }
+    // 後方互換性: 単一メディアの場合
+    if (post.mediaUri) {
+      return [{
+        id: '0',
+        mediaUrl: post.mediaUri,
+        isVideo: post.isVideo,
+        displayOrder: 0
+      }];
+    }
+    return [];
+  };
+
+  const mediaItems = getMediaItems();
+
+  // デフォルトアバター画像のURL
+  const getAvatarSource = () => {
+    if (post.userProfile?.avatar_url && !post.userProfile.avatar_url.includes('placeholder')) {
+      return { uri: post.userProfile.avatar_url };
+    }
+    // デフォルトアバター（Ioniconsのperson-circle）
+    return null;
+  };
+
+  const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => (
+    <View style={styles.mediaItem}>
+      <Image
+        source={{ uri: item.mediaUrl }}
+        style={styles.mediaImage}
+        contentFit="cover"
+      />
+      {item.isVideo && (
+        <View style={styles.videoIndicator}>
+          <Ionicons name="play" size={20} color="white" />
+        </View>
+      )}
+      {mediaItems.length > 1 && (
+        <View style={styles.mediaCounter}>
+          <Text style={styles.mediaCounterText}>{index + 1}/{mediaItems.length}</Text>
+        </View>
+      )}
+    </View>
+  );
+
   return (
-    <TouchableOpacity 
+    <TouchableOpacity
       style={styles.container}
       onPress={onPress}
       activeOpacity={0.7}
     >
+      {/* Profile Section - Top */}
+      {showProfile && post.userProfile && (
+        <View style={styles.profileHeader}>
+          <View style={styles.avatarContainer}>
+            {getAvatarSource() ? (
+              <Image
+                source={getAvatarSource()}
+                style={styles.avatar}
+                contentFit="cover"
+              />
+            ) : (
+              <View style={styles.defaultAvatar}>
+                <Ionicons name="person" size={20} color="#666" />
+              </View>
+            )}
+          </View>
+          <View style={styles.profileInfo}>
+            <View style={styles.nameRow}>
+              <Text style={styles.displayName}>{post.userProfile.display_name}</Text>
+              <Text style={styles.username}>@{post.userProfile.username}</Text>
+            </View>
+            <Text style={styles.postTime}>
+              {formatDate(post.shootingDate)} {formatTime(post.createdAt)}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* Media */}
       <View style={styles.mediaContainer}>
-        <Image
-          source={{ uri: post.mediaUri }}
-          style={styles.mediaImage}
-          contentFit="cover"
-        />
-        {post.isVideo && (
-          <View style={styles.videoIndicator}>
-            <Ionicons name="play" size={20} color="white" />
+        {mediaItems.length > 0 ? (
+          mediaItems.length === 1 ? (
+            // 単一メディアの場合
+            <View style={styles.singleMediaWrapper}>
+              <Image
+                source={{ uri: mediaItems[0].mediaUrl }}
+                style={styles.singleMediaImage}
+                contentFit="cover"
+              />
+              {mediaItems[0].isVideo && (
+                <View style={styles.videoIndicator}>
+                  <Ionicons name="play" size={20} color="white" />
+                </View>
+              )}
+            </View>
+          ) : (
+            // 複数メディアの場合
+            <FlatList
+              data={mediaItems}
+              renderItem={renderMediaItem}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              pagingEnabled
+              style={styles.mediaList}
+            />
+          )
+        ) : (
+          // フォールバック表示
+          <View style={styles.noMediaContainer}>
+            <Ionicons name="image-outline" size={40} color="#ccc" />
+            <Text style={styles.noMediaText}>画像なし</Text>
           </View>
         )}
+
       </View>
       
       {/* Content */}
       <View style={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.title} numberOfLines={1}>{post.title}</Text>
-          <Text style={styles.date}>
-            {formatDate(post.shootingDate)} {formatTime(post.createdAt)}
-          </Text>
+        <View style={styles.postContent}>
+          <Text style={styles.title}>{post.title}</Text>
+          <Text style={styles.menuName}>{post.menuName}</Text>
         </View>
-        
-        <Text style={styles.menuName}>{post.menuName}</Text>
         
         {post.description && (
           <Text style={styles.description} numberOfLines={2}>
@@ -89,11 +217,14 @@ export default function PostCard({
         )}
         
         <View style={styles.footer}>
-          <View style={styles.likesContainer}>
-            <Ionicons name="heart-outline" size={16} color="#ff3b30" />
-            <Text style={styles.likesCount}>{post.likesCount}</Text>
-          </View>
-          
+          {(() => {
+            console.log('=== FOOTER DEBUG ===');
+            console.log('Post ID:', post.id);
+            console.log('showActions:', showActions);
+            console.log('canEdit():', canEdit());
+            console.log('===================');
+            return null;
+          })()}
           {showActions && (
             <View style={styles.actions}>
               {canEdit() && (
@@ -146,10 +277,55 @@ const styles = StyleSheet.create({
     height: 200,
     position: 'relative',
   },
+  singleMediaWrapper: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  },
+  singleMediaImage: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f0f0f0',
+  },
+  mediaList: {
+    width: '100%',
+    height: '100%',
+  },
+  mediaItem: {
+    width: width - 32,
+    height: 200,
+    position: 'relative',
+  },
   mediaImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#f0f0f0',
+  },
+  mediaCounter: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  mediaCounterText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  noMediaContainer: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f8f9fa',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  noMediaText: {
+    color: '#8e8e8e',
+    fontSize: 14,
+    marginTop: 8,
   },
   videoIndicator: {
     position: 'absolute',
@@ -167,29 +343,70 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
   },
-  header: {
+  profileHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    backgroundColor: '#ffffff',
   },
-  title: {
-    fontSize: 18,
+  avatarContainer: {
+    marginRight: 12,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+  },
+  defaultAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profileInfo: {
+    flex: 1,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  displayName: {
+    fontSize: 15,
     fontWeight: '600',
     color: '#262626',
-    flex: 1,
     marginRight: 8,
   },
-  date: {
-    fontSize: 12,
+  username: {
+    fontSize: 14,
     color: '#8e8e8e',
-    fontWeight: '500',
+    fontWeight: '400',
+  },
+  postTime: {
+    fontSize: 13,
+    color: '#8e8e8e',
+    fontWeight: '400',
+  },
+  postContent: {
+    marginBottom: 12,
+  },
+  title: {
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#262626',
+    marginBottom: 8,
+    lineHeight: 20,
   },
   menuName: {
     fontSize: 14,
     color: '#0095f6',
-    fontWeight: '600',
-    marginBottom: 8,
+    fontWeight: '500',
+    marginBottom: 4,
   },
   description: {
     fontSize: 14,
@@ -199,21 +416,11 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     alignItems: 'center',
     paddingTop: 12,
     borderTopWidth: 0.5,
     borderTopColor: '#e0e0e0',
-  },
-  likesContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  likesCount: {
-    fontSize: 13,
-    color: '#666',
-    fontWeight: '500',
   },
   actions: {
     flexDirection: 'row',
