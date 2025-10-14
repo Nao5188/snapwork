@@ -85,11 +85,7 @@ export default function GalleryScreen() {
     if (selectedItems.includes(id)) {
       setSelectedItems(prev => prev.filter(itemId => itemId !== id));
     } else {
-      if (selectedItems.length < 5) {
-        setSelectedItems(prev => [...prev, id]);
-      } else {
-        Alert.alert('選択制限', '最大5つまで選択できます。');
-      }
+      setSelectedItems(prev => [...prev, id]);
     }
   };
 
@@ -108,9 +104,32 @@ export default function GalleryScreen() {
       return;
     }
 
+    if (selectedItems.length > 5) {
+      Alert.alert(
+        '選択制限',
+        `投稿作成では最大5枚まで選択できます。\n現在${selectedItems.length}枚選択されています。`,
+        [
+          {
+            text: 'キャンセル',
+            style: 'cancel',
+          },
+          {
+            text: '最初の5枚で投稿',
+            onPress: () => {
+              const first5Items = selectedItems.slice(0, 5);
+              const selectedAssets = mediaAssets.filter(asset => first5Items.includes(asset.id));
+              const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
+              router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}`);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
     const selectedAssets = mediaAssets.filter(asset => selectedItems.includes(asset.id));
     const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
-    
+
     router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}`);
   };
 

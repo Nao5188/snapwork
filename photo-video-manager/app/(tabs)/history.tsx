@@ -144,7 +144,43 @@ export default function HistoryScreen() {
           let userProfile = userMap.get(post.user_id);
 
           // 各投稿の複数メディアを取得
-          const mediaItems = await postService.getPostMedia(post.id);
+          let mediaItems = [];
+
+          // まず基本のメディアアイテムを作成
+          mediaItems.push({
+            id: 'media_0',
+            media_url: post.media_url,
+            is_video: post.is_video,
+            display_order: 0,
+          });
+
+          // menu_nameから追加メディア情報を解析
+          if (post.menu_name && post.menu_name.includes('|EXTRA_MEDIA:')) {
+            const parts = post.menu_name.split('|EXTRA_MEDIA:');
+            const extraUrls = parts[1] ? parts[1].split(',') : [];
+
+            // 追加のメディアアイテムを作成
+            extraUrls.forEach((url, index) => {
+              if (url.trim()) {
+                mediaItems.push({
+                  id: `media_${index + 1}`,
+                  media_url: url.trim(),
+                  is_video: false, // デフォルトで画像として扱う
+                  display_order: index + 1,
+                });
+              }
+            });
+          }
+
+          // post_mediaテーブルからも試行（優先）
+          try {
+            const postMediaItems = await postService.getPostMedia(post.id);
+            if (postMediaItems && postMediaItems.length > 0) {
+              mediaItems = postMediaItems;
+            }
+          } catch (error) {
+            // post_mediaテーブルが存在しない場合は既存のmediaItemsを使用
+          }
           
           if (!userProfile) {
             console.warn(`No user data found for user_id: ${post.user_id}`);
@@ -220,8 +256,15 @@ export default function HistoryScreen() {
           
           console.log(`Final user profile for post ${post.id}:`, userProfile);
 
+          // メニュー名から表示用の名前を分離
+          let displayMenuName = post.menu_name;
+          if (post.menu_name && post.menu_name.includes('|EXTRA_MEDIA:')) {
+            displayMenuName = post.menu_name.split('|EXTRA_MEDIA:')[0];
+          }
+
           return {
             ...post,
+            menu_name: displayMenuName, // 表示用のメニュー名
             mediaItems,
             users: userProfile
           };

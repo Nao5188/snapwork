@@ -469,7 +469,11 @@ export const postService = {
     display_order: number;
   }>) {
     try {
+      console.log(`=== SETTING POST MEDIA FOR ${postId} ===`);
+      console.log('Media items to insert:', mediaItems);
+
       // まず既存のメディアを削除
+      console.log('Deleting existing media...');
       const { error: deleteError } = await supabase
         .from('post_media')
         .delete()

@@ -168,15 +168,64 @@ export default function CreatePostScreen() {
         return;
       }
 
-      // 投稿データをSupabaseに保存
-      const savedPost = await postService.createPost({
+      console.log('=== CREATING POST WITH MULTIPLE MEDIA ===');
+      console.log('Media Items Count:', mediaItems.length);
+
+      // シンプルな方法：最初のメディアのみをmedia_urlに保存し、残りはmenu_nameに追記
+      const mainMediaUrl = mediaItems[0].uri;
+      let enhancedMenuName = formData.menuName;
+
+      // 複数メディアの場合、追加情報をメニュー名に埋め込む
+      if (mediaItems.length > 1) {
+        const additionalUrls = mediaItems.slice(1).map(item => item.uri);
+        enhancedMenuName = `${formData.menuName}|EXTRA_MEDIA:${additionalUrls.join(',')}`;
+      }
+
+      console.log('Main media URL:', mainMediaUrl);
+      console.log('Enhanced menu name:', enhancedMenuName);
+
+      // 投稿データを準備
+      const postData = {
         title: formData.title,
-        menu_name: formData.menuName,
-        media_url: mediaItems[0].uri, // メイン画像
+        menu_name: enhancedMenuName, // 追加メディア情報を含む
+        media_url: mainMediaUrl, // メイン画像のみ
         is_video: mediaItems[0].type === 'video',
         user_id: user.id,
         likes_count: 0,
-      });
+      };
+
+      console.log('Post data to save:', postData);
+
+      try {
+        // 投稿データをSupabaseに保存
+        const savedPost = await postService.createPost(postData);
+        console.log('=== POST CREATED SUCCESSFULLY ===');
+        console.log('Post ID:', savedPost.id);
+        console.log('Saved post:', savedPost);
+
+        // post_mediaテーブルが利用可能な場合は複数メディアを保存
+        if (mediaItems.length > 1) {
+          try {
+            const postMediaItems = mediaItems.map((item, index) => ({
+              media_url: item.uri,
+              is_video: item.type === 'video',
+              display_order: index,
+            }));
+
+            await postService.setPostMedia(savedPost.id, postMediaItems);
+            console.log('Multiple media saved to post_media table');
+          } catch (mediaError) {
+            console.warn('Failed to save to post_media table, using fallback method:', mediaError);
+          }
+        }
+
+        // 保存した投稿を返す
+        return savedPost;
+      } catch (createError) {
+        console.error('=== POST CREATION ERROR ===');
+        console.error('Error details:', createError);
+        throw createError;
+      }
 
       console.log('Post created successfully:', savedPost);
 

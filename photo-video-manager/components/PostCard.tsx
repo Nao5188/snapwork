@@ -85,7 +85,16 @@ export default function PostCard({
   // 複数メディアまたは単一メディアを取得
   const getMediaItems = (): MediaItem[] => {
     if (post.mediaItems && post.mediaItems.length > 0) {
-      return post.mediaItems.sort((a, b) => a.displayOrder - b.displayOrder);
+      // display_order または displayOrder プロパティでソート
+      const sortedItems = post.mediaItems.sort((a, b) =>
+        (a.displayOrder || a.display_order || 0) - (b.displayOrder || b.display_order || 0)
+      );
+      return sortedItems.map(item => ({
+        id: item.id,
+        mediaUrl: item.mediaUrl || item.media_url,
+        isVideo: item.isVideo || item.is_video,
+        displayOrder: item.displayOrder || item.display_order || 0
+      }));
     }
     // 後方互換性: 単一メディアの場合
     if (post.mediaUri) {
