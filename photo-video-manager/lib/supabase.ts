@@ -48,21 +48,49 @@ export const fileStorageService = {
       console.log('Uploading avatar for user:', userId);
       console.log('Image URI:', imageUri);
 
-      // ローカルファイルを読み込み
-      const response = await fetch(imageUri);
-      const blob = await response.blob();
-      
       // ファイル拡張子を取得
-      const fileExtension = imageUri.split('.').pop() || 'jpg';
-      const fileName = `avatar_${userId}_${Date.now()}.${fileExtension}`;
-      
+      const fileExtension = imageUri.split('.').pop()?.split('?')[0] || 'jpg';
+      // ユーザーIDをフォルダとして使用し、RLSポリシーと一致させる
+      const fileName = `${userId}/avatar_${Date.now()}.${fileExtension}`;
+
       console.log('Uploading file:', fileName);
+
+      // fetchを使用してローカルファイルを読み込み、blobに変換
+      const response = await fetch(imageUri);
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.statusText}`);
+      }
+
+      // Blobを取得
+      const blob = await response.blob();
+      console.log('Blob size:', blob.size, 'type:', blob.type);
+
+      // React Native用のBlob処理
+      // FileReaderを使用してBlobをArrayBufferに変換
+      const fileReaderPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+        const fileReader = new FileReader();
+        fileReader.onload = () => {
+          if (fileReader.result instanceof ArrayBuffer) {
+            resolve(fileReader.result);
+          } else {
+            reject(new Error('FileReader did not return ArrayBuffer'));
+          }
+        };
+        fileReader.onerror = () => reject(fileReader.error);
+        fileReader.readAsArrayBuffer(blob);
+      });
+
+      const arrayBuffer = await fileReaderPromise;
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      console.log('Converted to Uint8Array, size:', uint8Array.length);
 
       // Supabase Storageにアップロード
       const { data, error } = await supabase.storage
         .from('avatars')
-        .upload(fileName, blob, {
-          contentType: `image/${fileExtension}`,
+        .upload(fileName, uint8Array, {
+          contentType: blob.type || `image/${fileExtension}`,
           upsert: true
         });
 

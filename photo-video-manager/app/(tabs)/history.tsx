@@ -201,14 +201,21 @@ export default function HistoryScreen() {
                 } else {
                   console.log(`❌ Failed to create profile, using known user mapping`);
                   
-                  // 既知のユーザーマッピング（かわしまさんのID）
+                  // 既知のユーザーマッピング
                   const knownUsers: Record<string, any> = {
                     '2765ca9f-7c10-40d4-8a59-c4684c94952d': {
                       id: '2765ca9f-7c10-40d4-8a59-c4684c94952d',
-                      username: 'かわしま',
-                      display_name: 'かわしま',
-                      avatar_url: null,
-                      email: 'kawashima@example.com'
+                      username: 'ナオヤkawashima',
+                      display_name: 'ナオヤkawashima',
+                      avatar_url: 'file:///var/mobile/Containers/Data/Application/6775EA93-1568-4C6E-8BB1-ECFC36A5553D/Library/Caches/ExponentExperienceData/@anonymous/photo-video-manager-5d2c7157-cb1c-438e-b5fb-af5d3e90b93d/ImagePicker/F93092CF-2E27-46A8-B594-E282554282EB.jpg',
+                      email: 'naoya.kawashima@comsize.com'
+                    },
+                    '6ad8ff35-d5c6-46c9-9e43-96588d200e99': {
+                      id: '6ad8ff35-d5c6-46c9-9e43-96588d200e99',
+                      username: 'kawanao5188',
+                      display_name: 'kawanao5188',
+                      avatar_url: 'https://via.placeholder.com/150x150/2E8B57/FFFFFF?text=K',
+                      email: 'kawanao5188@example.com'
                     }
                   };
                   
@@ -232,10 +239,17 @@ export default function HistoryScreen() {
                 const knownUsers: Record<string, any> = {
                   '2765ca9f-7c10-40d4-8a59-c4684c94952d': {
                     id: '2765ca9f-7c10-40d4-8a59-c4684c94952d',
-                    username: 'かわしま',
-                    display_name: 'かわしま',
-                    avatar_url: null,
-                    email: 'kawashima@example.com'
+                    username: 'ナオヤkawashima',
+                    display_name: 'ナオヤkawashima',
+                    avatar_url: 'file:///var/mobile/Containers/Data/Application/6775EA93-1568-4C6E-8BB1-ECFC36A5553D/Library/Caches/ExponentExperienceData/@anonymous/photo-video-manager-5d2c7157-cb1c-438e-b5fb-af5d3e90b93d/ImagePicker/F93092CF-2E27-46A8-B594-E282554282EB.jpg',
+                    email: 'naoya.kawashima@comsize.com'
+                  },
+                  '6ad8ff35-d5c6-46c9-9e43-96588d200e99': {
+                    id: '6ad8ff35-d5c6-46c9-9e43-96588d200e99',
+                    username: 'kawanao5188',
+                    display_name: 'kawanao5188',
+                    avatar_url: 'https://via.placeholder.com/150x150/2E8B57/FFFFFF?text=K',
+                    email: 'kawanao5188@example.com'
                   }
                 };
                 
@@ -369,7 +383,7 @@ export default function HistoryScreen() {
       shootingDate: createdDate, // 撮影日がない場合は作成日を使用
       description: item.categories,
       userProfile: item.users ? {
-        id: item.users.username || '',
+        id: item.user_id || '',
         username: item.users.username || '',
         display_name: item.users.display_name || '',
         avatar_url: item.users.avatar_url
@@ -380,6 +394,7 @@ export default function HistoryScreen() {
       <PostCard
         post={postCardData}
         showActions={isOwner}
+        showProfile={true}
         onPress={() => Alert.alert('ポスト詳細', `タイトル: ${item.title}\nメニュー: ${item.menu_name}`)}
         onEdit={() => handleEditPost(item)}
         onDelete={() => handleDeletePost(item)}

@@ -80,9 +80,9 @@ export default function ProfileScreen() {
       const postsCount = await postService.getUserPostsCount(user.id);
       
       // プロフィール写真のURL処理を改善
-      const avatarUrl = profile.avatar_url || 
+      const avatarUrl = profile.avatar_url ||
         `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=${encodeURIComponent(profile.display_name?.charAt(0) || 'U')}`;
-      
+
       console.log('Setting user profile:', {
         id: profile.id,
         username: profile.username,
@@ -90,33 +90,12 @@ export default function ProfileScreen() {
         avatar: avatarUrl,
         postsCount: postsCount,
       });
-      
-      let finalAvatarUrl = avatarUrl;
-      
-      // ローカル画像を自動的にSupabase Storageにアップロード
-      if (avatarUrl && avatarUrl.startsWith('file://')) {
-        console.log('🔄 Auto-uploading local avatar to make it accessible to all users...');
-        try {
-          const publicUrl = await fileStorageService.uploadAvatar(profile.id, avatarUrl);
-          
-          // データベースを更新
-          await userService.updateProfile(profile.id, {
-            avatar_url: publicUrl,
-          });
-          
-          finalAvatarUrl = publicUrl;
-          console.log('✅ Avatar auto-upload successful:', publicUrl);
-        } catch (uploadError) {
-          console.warn('❌ Auto-upload failed, keeping local avatar for now:', uploadError);
-          // 失敗した場合はローカル画像をそのまま使用
-        }
-      }
 
       setUserProfile({
         id: profile.id,
         username: profile.username,
         displayName: profile.display_name,
-        avatar: finalAvatarUrl,
+        avatar: avatarUrl,
         postsCount: postsCount,
       });
 
@@ -165,7 +144,7 @@ export default function ProfileScreen() {
   const handleSelectAvatar = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
@@ -227,22 +206,28 @@ export default function ProfileScreen() {
         try {
           // ローカル画像をSupabase Storageにアップロード
           console.log('Uploading avatar to Supabase Storage...');
+          console.log('User ID:', userProfile.id);
+          console.log('Edit Avatar Path:', editAvatar);
+
           avatarUrl = await fileStorageService.uploadAvatar(userProfile.id, editAvatar);
           console.log('Avatar uploaded successfully:', avatarUrl);
-          
+
           // 古いアバター画像を削除（もしあれば）
           if (userProfile.avatar && !userProfile.avatar.startsWith('file://') && !userProfile.avatar.includes('placeholder')) {
             try {
+              console.log('Deleting old avatar:', userProfile.avatar);
               await fileStorageService.deleteAvatar(userProfile.avatar);
+              console.log('Old avatar deleted successfully');
             } catch (deleteError) {
               console.warn('Failed to delete old avatar:', deleteError);
             }
           }
         } catch (uploadError) {
           console.error('Avatar upload failed:', uploadError);
+          console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
           Alert.alert(
-            'アップロードエラー', 
-            'プロフィール画像のアップロードに失敗しました。インターネット接続を確認してもう一度お試しください。'
+            'アップロードエラー',
+            `プロフィール画像のアップロードに失敗しました。\nエラー: ${uploadError.message || 'Unknown error'}\nインターネット接続を確認してもう一度お試しください。`
           );
           setUploading(false);
           return;
@@ -252,11 +237,20 @@ export default function ProfileScreen() {
       console.log('Final avatar URL:', avatarUrl);
 
       // プロフィールを更新
+      console.log('Updating profile in database...');
+      console.log('Update data:', {
+        display_name: editDisplayName.trim(),
+        username: editUsername.trim().toLowerCase(),
+        avatar_url: avatarUrl,
+      });
+
       await userService.updateProfile(userProfile.id, {
         display_name: editDisplayName.trim(),
         username: editUsername.trim().toLowerCase(),
         avatar_url: avatarUrl,
       });
+
+      console.log('Profile updated successfully in database');
 
       const updatedProfile = {
         ...userProfile,
@@ -264,15 +258,17 @@ export default function ProfileScreen() {
         username: editUsername.trim().toLowerCase(),
         avatar: avatarUrl
       };
-      
+
       console.log('Updating local profile state:', updatedProfile);
       setUserProfile(updatedProfile);
-      
+
       setIsEditModalVisible(false);
+      setEditAvatar(null);
       Alert.alert('成功', 'プロフィールを更新しました。');
     } catch (error) {
       console.error('Profile update error:', error);
-      Alert.alert('エラー', 'プロフィールの更新に失敗しました。');
+      console.error('Update error details:', JSON.stringify(error, null, 2));
+      Alert.alert('エラー', `プロフィールの更新に失敗しました。\nエラー: ${error.message || 'Unknown error'}`);
     } finally {
       setUploading(false);
     }
