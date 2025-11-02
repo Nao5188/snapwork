@@ -78,10 +78,17 @@ export default function ProfileScreen() {
       
       // 投稿数を取得
       const postsCount = await postService.getUserPostsCount(user.id);
-      
+
       // プロフィール写真のURL処理を改善
-      const avatarUrl = profile.avatar_url ||
-        `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=${encodeURIComponent(profile.display_name?.charAt(0) || 'U')}`;
+      // ローカルファイルパスまたはplaceholderの場合はデフォルト画像を使用
+      let avatarUrl = profile.avatar_url;
+
+      if (!avatarUrl ||
+          avatarUrl.startsWith('file://') ||
+          avatarUrl.includes('placeholder')) {
+        // デフォルトアバター画像を生成
+        avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.display_name || profile.username || 'User')}&size=200&background=4A90E2&color=fff&bold=true`;
+      }
 
       console.log('Setting user profile:', {
         id: profile.id,

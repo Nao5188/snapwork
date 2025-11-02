@@ -112,7 +112,10 @@ export default function PostCard({
 
   // デフォルトアバター画像のURL
   const getAvatarSource = () => {
-    if (post.userProfile?.avatar_url && !post.userProfile.avatar_url.includes('placeholder')) {
+    if (post.userProfile?.avatar_url &&
+        !post.userProfile.avatar_url.includes('placeholder') &&
+        !post.userProfile.avatar_url.startsWith('file://')) {
+      // Supabase StorageのURLのみ有効とする
       return { uri: post.userProfile.avatar_url };
     }
     // デフォルトアバター（Ioniconsのperson-circle）
