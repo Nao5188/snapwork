@@ -8,6 +8,7 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 // 環境変数から取得（または直接指定）
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';

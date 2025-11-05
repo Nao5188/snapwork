@@ -68,10 +68,25 @@ export default function EditPostScreen() {
       // Supabaseから投稿データと複数メディアを取得
       const postWithMedia = await postService.getPostWithMedia(id as string);
 
+      // 投稿が見つからない、またはnullの場合
+      if (!postWithMedia) {
+        Alert.alert(
+          '投稿が見つかりません',
+          'この投稿は削除されたか、存在しません。',
+          [{ text: 'OK', onPress: () => router.back() }]
+        );
+        setInitialLoading(false);
+        return;
+      }
+
       // 投稿の所有者チェック
       if (currentUserId && postWithMedia.user_id !== currentUserId) {
-        Alert.alert('エラー', 'この投稿を編集する権限がありません。');
-        router.back();
+        Alert.alert(
+          '権限がありません',
+          'この投稿を編集する権限がありません。',
+          [{ text: 'OK', onPress: () => router.back() }]
+        );
+        setInitialLoading(false);
         return;
       }
 
@@ -85,7 +100,7 @@ export default function EditPostScreen() {
 
       if (postWithMedia.mediaItems && postWithMedia.mediaItems.length > 0) {
         // 複数メディアがある場合
-        postWithMedia.mediaItems.forEach((media, index) => {
+        postWithMedia.mediaItems.forEach((media: any, index: number) => {
           mediaItems.push({
             id: media.id,
             uri: media.media_url,
@@ -105,12 +120,27 @@ export default function EditPostScreen() {
 
       console.log('Loaded media items:', mediaItems);
       setMediaItems(mediaItems);
+      setInitialLoading(false);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading post:', error);
-      Alert.alert('エラー', '投稿データの読み込みに失敗しました。');
-      router.back();
-    } finally {
+
+      // Supabaseのエラーコードをチェック
+      if (error?.code === 'PGRST116') {
+        // 投稿が見つからない場合
+        Alert.alert(
+          '投稿が見つかりません',
+          'この投稿は既に削除されているか、存在しません。',
+          [{ text: 'OK', onPress: () => router.back() }]
+        );
+      } else {
+        // その他のエラー
+        Alert.alert(
+          'エラー',
+          '投稿データの読み込みに失敗しました。\nもう一度お試しください。',
+          [{ text: 'OK', onPress: () => router.back() }]
+        );
+      }
       setInitialLoading(false);
     }
   };

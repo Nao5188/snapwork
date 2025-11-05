@@ -160,7 +160,7 @@ export default function HistoryScreen() {
             const extraUrls = parts[1] ? parts[1].split(',') : [];
 
             // 追加のメディアアイテムを作成
-            extraUrls.forEach((url, index) => {
+            extraUrls.forEach((url: string, index: number) => {
               if (url.trim()) {
                 mediaItems.push({
                   id: `media_${index + 1}`,
@@ -339,15 +339,26 @@ export default function HistoryScreen() {
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除', style: 'destructive', onPress: async () => {
           try {
+            console.log('Deleting post:', post.id);
+
+            // まずローカル状態を更新（UI即座に反映）
+            setPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
+
             // Supabaseから削除
             await postService.deletePost(post.id);
-            
-            // ローカル状態も更新
-            setPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
+
+            console.log('Post deleted successfully:', post.id);
             Alert.alert('削除完了', 'ポストを削除しました。');
-          } catch (error) {
+          } catch (error: any) {
             console.error('Error deleting post:', error);
-            Alert.alert('エラー', '削除に失敗しました。');
+
+            // 削除失敗時は投稿を再読み込み
+            loadPosts();
+
+            Alert.alert(
+              'エラー',
+              `削除に失敗しました。\n${error?.message || 'もう一度お試しください。'}`
+            );
           }
         }}
       ]

@@ -86,10 +86,10 @@ export default function PostCard({
   const getMediaItems = (): MediaItem[] => {
     if (post.mediaItems && post.mediaItems.length > 0) {
       // display_order または displayOrder プロパティでソート
-      const sortedItems = post.mediaItems.sort((a, b) =>
+      const sortedItems = post.mediaItems.sort((a: any, b: any) =>
         (a.displayOrder || a.display_order || 0) - (b.displayOrder || b.display_order || 0)
       );
-      return sortedItems.map(item => ({
+      return sortedItems.map((item: any) => ({
         id: item.id,
         mediaUrl: item.mediaUrl || item.media_url,
         isVideo: item.isVideo || item.is_video,

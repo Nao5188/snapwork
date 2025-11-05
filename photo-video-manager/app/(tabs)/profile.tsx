@@ -229,12 +229,12 @@ export default function ProfileScreen() {
               console.warn('Failed to delete old avatar:', deleteError);
             }
           }
-        } catch (uploadError) {
+        } catch (uploadError: any) {
           console.error('Avatar upload failed:', uploadError);
           console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
           Alert.alert(
             'アップロードエラー',
-            `プロフィール画像のアップロードに失敗しました。\nエラー: ${uploadError.message || 'Unknown error'}\nインターネット接続を確認してもう一度お試しください。`
+            `プロフィール画像のアップロードに失敗しました。\nエラー: ${uploadError?.message || 'Unknown error'}\nインターネット接続を確認してもう一度お試しください。`
           );
           setUploading(false);
           return;
@@ -272,10 +272,10 @@ export default function ProfileScreen() {
       setIsEditModalVisible(false);
       setEditAvatar(null);
       Alert.alert('成功', 'プロフィールを更新しました。');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Profile update error:', error);
       console.error('Update error details:', JSON.stringify(error, null, 2));
-      Alert.alert('エラー', `プロフィールの更新に失敗しました。\nエラー: ${error.message || 'Unknown error'}`);
+      Alert.alert('エラー', `プロフィールの更新に失敗しました。\nエラー: ${error?.message || 'Unknown error'}`);
     } finally {
       setUploading(false);
     }
@@ -316,6 +316,47 @@ export default function ProfileScreen() {
     router.push(`/post/edit/${postId}`);
   };
 
+  const handleDeletePost = (post: UserPost) => {
+    Alert.alert(
+      'ポスト削除',
+      `「${post.title}」を削除しますか？`,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除', style: 'destructive', onPress: async () => {
+          try {
+            console.log('Deleting post from profile:', post.id);
+
+            // まずローカル状態を更新（UI即座に反映）
+            setUserPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
+
+            // プロフィールの投稿数も更新
+            if (userProfile) {
+              setUserProfile({
+                ...userProfile,
+                postsCount: Math.max(0, (userProfile.postsCount || 0) - 1)
+              });
+            }
+
+            // Supabaseから削除
+            await postService.deletePost(post.id);
+
+            console.log('Post deleted successfully from profile:', post.id);
+            Alert.alert('削除完了', 'ポストを削除しました。');
+          } catch (error: any) {
+            console.error('Error deleting post from profile:', error);
+
+            // 削除失敗時はプロフィールを再読み込み
+            loadUserProfile();
+
+            Alert.alert(
+              'エラー',
+              `削除に失敗しました。\n${error?.message || 'もう一度お試しください。'}`
+            );
+          }
+        }}
+      ]
+    );
+  };
 
   const renderPostItem = ({ item }: { item: UserPost }) => (
     <View style={styles.postItem}>
@@ -335,13 +376,22 @@ export default function ProfileScreen() {
           </View>
         )}
       </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.editPostButton}
-        onPress={() => handleEditPost(item.id)}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="create-outline" size={18} color="white" />
-      </TouchableOpacity>
+      <View style={styles.postActionButtons}>
+        <TouchableOpacity
+          style={styles.editPostButton}
+          onPress={() => handleEditPost(item.id)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="create-outline" size={18} color="white" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.deletePostButton}
+          onPress={() => handleDeletePost(item)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="trash-outline" size={18} color="white" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -710,11 +760,23 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#f0f0f0',
   },
-  editPostButton: {
+  postActionButtons: {
     position: 'absolute',
     top: 8,
     left: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  editPostButton: {
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 16,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deletePostButton: {
+    backgroundColor: 'rgba(220, 53, 69, 0.9)',
     borderRadius: 16,
     width: 32,
     height: 32,

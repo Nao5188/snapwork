@@ -44,10 +44,6 @@ export default function GalleryScreen() {
   const [loading, setLoading] = useState(true);
   const [selectionMode, setSelectionMode] = useState(false);
 
-  useEffect(() => {
-    getPermissionsAndLoadAssets();
-  }, []);
-
   const getPermissionsAndLoadAssets = async () => {
     const { status } = await MediaLibrary.requestPermissionsAsync();
     setHasPermission(status === 'granted');
@@ -58,6 +54,10 @@ export default function GalleryScreen() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    getPermissionsAndLoadAssets();
+  }, []);
 
   const loadMediaAssets = async () => {
     try {

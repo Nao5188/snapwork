@@ -219,21 +219,21 @@ export default function CreatePostScreen() {
           }
         }
 
-        // 保存した投稿を返す
+        // 投稿成功
+        console.log('Post created successfully:', savedPost);
+
+        Alert.alert(
+          '投稿完了',
+          '投稿が正常に作成されました。',
+          [{ text: 'OK', onPress: () => router.push('/(tabs)/history') }]
+        );
+
         return savedPost;
       } catch (createError) {
         console.error('=== POST CREATION ERROR ===');
         console.error('Error details:', createError);
         throw createError;
       }
-
-      console.log('Post created successfully:', savedPost);
-
-      Alert.alert(
-        '投稿完了',
-        '投稿が正常に作成されました。',
-        [{ text: 'OK', onPress: () => router.push('/(tabs)/history') }]
-      );
     } catch (error) {
       console.error('Error creating post:', error);
       Alert.alert('エラー', '投稿の作成に失敗しました。');

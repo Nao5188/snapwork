@@ -44,17 +44,30 @@ CREATE TABLE media_library (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Post media table (投稿の複数メディア管理)
+CREATE TABLE post_media (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  post_id UUID REFERENCES posts(id) ON DELETE CASCADE NOT NULL,
+  media_url TEXT NOT NULL,
+  is_video BOOLEAN DEFAULT FALSE,
+  display_order INTEGER DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Indexes for better performance
 CREATE INDEX idx_posts_user_id ON posts(user_id);
 CREATE INDEX idx_posts_created_at ON posts(created_at DESC);
 CREATE INDEX idx_media_library_user_id ON media_library(user_id);
 CREATE INDEX idx_media_library_created_at ON media_library(created_at DESC);
+CREATE INDEX idx_post_media_post_id ON post_media(post_id);
+CREATE INDEX idx_post_media_display_order ON post_media(display_order);
 CREATE INDEX idx_users_username ON users(username);
 
 -- Row Level Security (RLS) Policies
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE media_library ENABLE ROW LEVEL SECURITY;
+ALTER TABLE post_media ENABLE ROW LEVEL SECURITY;
 
 -- Users table policies
 CREATE POLICY "Users can view own profile" ON users
@@ -88,6 +101,37 @@ CREATE POLICY "Users can insert own media" ON media_library
 
 CREATE POLICY "Users can delete own media" ON media_library
   FOR DELETE USING (auth.uid() = user_id);
+
+-- Post media table policies
+CREATE POLICY "Users can view all post media" ON post_media
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert own post media" ON post_media
+  FOR INSERT WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM posts
+      WHERE posts.id = post_media.post_id
+      AND posts.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update own post media" ON post_media
+  FOR UPDATE USING (
+    EXISTS (
+      SELECT 1 FROM posts
+      WHERE posts.id = post_media.post_id
+      AND posts.user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can delete own post media" ON post_media
+  FOR DELETE USING (
+    EXISTS (
+      SELECT 1 FROM posts
+      WHERE posts.id = post_media.post_id
+      AND posts.user_id = auth.uid()
+    )
+  );
 
 -- Functions for automatic timestamp updates
 CREATE OR REPLACE FUNCTION update_updated_at_column()
