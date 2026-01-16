@@ -70,8 +70,9 @@ ALTER TABLE media_library ENABLE ROW LEVEL SECURITY;
 ALTER TABLE post_media ENABLE ROW LEVEL SECURITY;
 
 -- Users table policies
-CREATE POLICY "Users can view own profile" ON users
-  FOR SELECT USING (auth.uid() = id);
+-- 認証済みユーザーは全ユーザーのプロフィールを閲覧可能（投稿フィードで他ユーザー情報を表示するため）
+CREATE POLICY "Authenticated users can view all profiles" ON users
+  FOR SELECT USING (auth.role() = 'authenticated');
 
 CREATE POLICY "Users can update own profile" ON users
   FOR UPDATE USING (auth.uid() = id);
