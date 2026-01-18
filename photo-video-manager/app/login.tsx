@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -9,10 +9,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { authService, userService } from '../lib/supabase';
 import { storageService } from '../lib/storage';
+
+const { width } = Dimensions.get('window');
 
 export default function LoginScreen() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -26,8 +30,27 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // コンポーネントマウント時にRemember Me設定を読み込み
+  // アニメーション
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 800,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
   useEffect(() => {
     const loadRememberMeSettings = async () => {
       try {
@@ -96,7 +119,7 @@ export default function LoginScreen() {
     console.log('=== Login/Signup attempt started ===');
     console.log('Mode:', isSignUp ? 'SignUp' : 'SignIn');
     console.log('Email:', formData.email);
-    
+
     if (!validateForm()) {
       console.log('Form validation failed');
       return;
@@ -107,7 +130,6 @@ export default function LoginScreen() {
     try {
       if (isSignUp) {
         console.log('Starting signup process...');
-        // ユーザー名の重複チェック
         const isUsernameAvailable = await userService.checkUsernameAvailability(formData.username);
         if (!isUsernameAvailable) {
           Alert.alert('入力エラー', 'このユーザー名は既に使用されています。');
@@ -115,7 +137,6 @@ export default function LoginScreen() {
           return;
         }
 
-        // 表示名の重複チェック
         const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(formData.displayName);
         if (!isDisplayNameAvailable) {
           Alert.alert('入力エラー', 'この表示名は既に使用されています。');
@@ -123,10 +144,9 @@ export default function LoginScreen() {
           return;
         }
 
-        // サインアップ処理
         console.log('Calling authService.signUp...');
         const result = await authService.signUp(
-          formData.email, 
+          formData.email,
           formData.password,
           {
             username: formData.username,
@@ -138,15 +158,13 @@ export default function LoginScreen() {
         Alert.alert(
           'アカウント作成完了',
           'アカウントが正常に作成されました。\n\nメールアドレス宛に確認メールを送信しました。メールに記載されているリンクをクリックして認証を完了してから、ログインしてください。',
-          [{ 
-            text: 'OK', 
+          [{
+            text: 'OK',
             onPress: () => {
               console.log('Switching to login mode...');
-              // ログインモードに切り替え
               setIsSignUp(false);
-              // フォームをクリア
               setFormData({
-                email: formData.email, // メールアドレスは残す
+                email: formData.email,
                 password: '',
                 confirmPassword: '',
                 displayName: '',
@@ -156,11 +174,10 @@ export default function LoginScreen() {
           }]
         );
       } else {
-        // ログイン処理
         console.log('Starting signin process...');
         const result = await authService.signIn(formData.email, formData.password, rememberMe);
         console.log('SignIn result:', result);
-        
+
         Alert.alert(
           'ログイン成功',
           'ログインしました。'
@@ -168,10 +185,9 @@ export default function LoginScreen() {
       }
     } catch (error: any) {
       console.error('Auth error:', error);
-      
-      // Supabaseエラーメッセージの日本語化
+
       let errorMessage = '認証に失敗しました。もう一度お試しください。';
-      
+
       if (error.message?.includes('Invalid login credentials')) {
         errorMessage = 'メールアドレスまたはパスワードが正しくありません。';
       } else if (error.message?.includes('User already registered')) {
@@ -181,7 +197,6 @@ export default function LoginScreen() {
       } else if (error.message?.includes('Display name already exists')) {
         errorMessage = 'この表示名は既に使用されています。';
       } else if (error.message?.includes('For security purposes, you can only request this after')) {
-        // レートリミットエラー
         const match = error.message.match(/after (\d+) seconds?/);
         const seconds = match ? match[1] : '少し';
         errorMessage = `セキュリティのため、${seconds}秒後に再試行してください。\n\n短時間に複数回の登録試行があったため、一時的に制限されています。`;
@@ -194,7 +209,7 @@ export default function LoginScreen() {
       } else if (error.message?.includes('rate limit')) {
         errorMessage = 'リクエストが多すぎます。しばらく待ってから再試行してください。';
       }
-      
+
       Alert.alert('エラー', errorMessage);
     } finally {
       setLoading(false);
@@ -213,143 +228,192 @@ export default function LoginScreen() {
     setRememberMe(false);
   };
 
-  return (
-    <KeyboardAvoidingView 
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.header}>
-          <View style={styles.logoContainer}>
-            <Ionicons name="camera" size={60} color="#262626" />
-            <Text style={styles.appName}>PhotoManager</Text>
-          </View>
-        </View>
+  const renderInput = (
+    field: string,
+    label: string,
+    placeholder: string,
+    options: {
+      icon: keyof typeof Ionicons.glyphMap;
+      secureTextEntry?: boolean;
+      keyboardType?: 'default' | 'email-address';
+      autoCapitalize?: 'none' | 'words';
+    }
+  ) => {
+    const isFocused = focusedField === field;
+    const hasValue = formData[field as keyof typeof formData]?.length > 0;
 
-        <View style={styles.formContainer}>
-          <Text style={styles.formTitle}>
-            {isSignUp ? 'アカウント作成' : 'ログイン'}
-          </Text>
-
-          {isSignUp && (
-            <>
-              <View style={styles.inputContainer}>
-                <Text style={styles.inputLabel}>表示名</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="山田太郎"
-                  value={formData.displayName}
-                  onChangeText={(text) => handleInputChange('displayName', text)}
-                  autoCapitalize="words"
-                />
-              </View>
-
-              <View style={styles.inputContainer}>
-                <Text style={styles.inputLabel}>ユーザー名</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="yamada_taro"
-                  value={formData.username}
-                  onChangeText={(text) => handleInputChange('username', text.toLowerCase())}
-                  autoCapitalize="none"
-                />
-              </View>
-            </>
-          )}
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>メールアドレス</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="example@company.com"
-              value={formData.email}
-              onChangeText={(text) => handleInputChange('email', text)}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>パスワード</Text>
-            <View style={styles.passwordContainer}>
-              <TextInput
-                style={styles.passwordInput}
-                placeholder="6文字以上"
-                value={formData.password}
-                onChangeText={(text) => handleInputChange('password', text)}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
+    return (
+      <View style={styles.inputWrapper}>
+        <Text style={styles.inputLabel}>{label}</Text>
+        <View style={[
+          styles.inputContainer,
+          isFocused && styles.inputContainerFocused,
+        ]}>
+          <Ionicons
+            name={options.icon}
+            size={20}
+            color={isFocused ? '#1a1a1a' : '#999'}
+            style={styles.inputIcon}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder={placeholder}
+            placeholderTextColor="#bbb"
+            value={formData[field as keyof typeof formData]}
+            onChangeText={(text) => handleInputChange(field, options.autoCapitalize === 'none' ? text.toLowerCase() : text)}
+            secureTextEntry={options.secureTextEntry && !showPassword}
+            keyboardType={options.keyboardType || 'default'}
+            autoCapitalize={options.autoCapitalize || 'none'}
+            autoCorrect={false}
+            onFocus={() => setFocusedField(field)}
+            onBlur={() => setFocusedField(null)}
+          />
+          {options.secureTextEntry && (
+            <TouchableOpacity
+              style={styles.eyeButton}
+              onPress={() => setShowPassword(!showPassword)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons
+                name={showPassword ? 'eye-outline' : 'eye-off-outline'}
+                size={20}
+                color="#999"
               />
-              <TouchableOpacity 
-                style={styles.eyeButton}
-                onPress={() => setShowPassword(!showPassword)}
-              >
-                <Ionicons 
-                  name={showPassword ? 'eye' : 'eye-off'} 
-                  size={20} 
-                  color="#8e8e8e" 
-                />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {isSignUp && (
-            <View style={styles.inputContainer}>
-              <Text style={styles.inputLabel}>パスワード（確認）</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="パスワードを再入力"
-                value={formData.confirmPassword}
-                onChangeText={(text) => handleInputChange('confirmPassword', text)}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
-          )}
-
-          {!isSignUp && (
-            <View style={styles.rememberMeContainer}>
-              <TouchableOpacity
-                style={styles.checkboxContainer}
-                onPress={() => setRememberMe(!rememberMe)}
-              >
-                <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
-                  {rememberMe && (
-                    <Ionicons name="checkmark" size={14} color="#ffffff" />
-                  )}
-                </View>
-                <Text style={styles.rememberMeText}>ログイン状態を保持する</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          <TouchableOpacity 
-            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
-            onPress={handleSubmit}
-            disabled={loading}
-          >
-            <Text style={styles.submitButtonText}>
-              {loading ? '処理中...' : (isSignUp ? 'アカウント作成' : 'ログイン')}
-            </Text>
-          </TouchableOpacity>
-
-          <View style={styles.switchContainer}>
-            <Text style={styles.switchText}>
-              {isSignUp ? 'すでにアカウントをお持ちですか？' : 'アカウントをお持ちでないですか？'}
-            </Text>
-            <TouchableOpacity onPress={switchMode}>
-              <Text style={styles.switchLink}>
-                {isSignUp ? 'ログイン' : 'アカウント作成'}
-              </Text>
             </TouchableOpacity>
-          </View>
+          )}
         </View>
+      </View>
+    );
+  };
 
-      </ScrollView>
-    </KeyboardAvoidingView>
+  return (
+    <View style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.keyboardView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Animated.View
+            style={[
+              styles.content,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }],
+              }
+            ]}
+          >
+            {/* Header */}
+            <View style={styles.header}>
+              <View style={styles.logoContainer}>
+                <View style={styles.logoCircle}>
+                  <Ionicons name="camera" size={32} color="#1a1a1a" />
+                </View>
+              </View>
+              <Text style={styles.appName}>PhotoManager</Text>
+              <Text style={styles.appTagline}>
+                {isSignUp ? '新しいアカウントを作成' : 'おかえりなさい'}
+              </Text>
+            </View>
+
+            {/* Form Card */}
+            <View style={styles.formCard}>
+              {isSignUp && (
+                <>
+                  {renderInput('displayName', '表示名', '山田 太郎', {
+                    icon: 'person-outline',
+                    autoCapitalize: 'words',
+                  })}
+                  {renderInput('username', 'ユーザー名', 'yamada_taro', {
+                    icon: 'at-outline',
+                    autoCapitalize: 'none',
+                  })}
+                </>
+              )}
+
+              {renderInput('email', 'メールアドレス', 'example@email.com', {
+                icon: 'mail-outline',
+                keyboardType: 'email-address',
+                autoCapitalize: 'none',
+              })}
+
+              {renderInput('password', 'パスワード', '6文字以上', {
+                icon: 'lock-closed-outline',
+                secureTextEntry: true,
+              })}
+
+              {isSignUp && renderInput('confirmPassword', 'パスワード（確認）', '再度入力', {
+                icon: 'lock-closed-outline',
+                secureTextEntry: true,
+              })}
+
+              {/* Remember Me */}
+              {!isSignUp && (
+                <TouchableOpacity
+                  style={styles.rememberMeContainer}
+                  onPress={() => setRememberMe(!rememberMe)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
+                    {rememberMe && (
+                      <Ionicons name="checkmark" size={14} color="#fff" />
+                    )}
+                  </View>
+                  <Text style={styles.rememberMeText}>ログイン状態を保持する</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Submit Button */}
+              <TouchableOpacity
+                style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+                onPress={handleSubmit}
+                disabled={loading}
+                activeOpacity={0.8}
+              >
+                {loading ? (
+                  <Text style={styles.submitButtonText}>処理中...</Text>
+                ) : (
+                  <>
+                    <Text style={styles.submitButtonText}>
+                      {isSignUp ? 'アカウント作成' : 'ログイン'}
+                    </Text>
+                    <Ionicons name="arrow-forward" size={20} color="#fff" style={styles.submitIcon} />
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {/* Divider */}
+              <View style={styles.divider}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>または</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              {/* Switch Mode */}
+              <TouchableOpacity
+                style={styles.switchButton}
+                onPress={switchMode}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.switchButtonText}>
+                  {isSignUp ? '既にアカウントをお持ちの方' : '新規アカウント作成'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Footer */}
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>
+                続行することで、利用規約とプライバシーポリシーに同意したことになります
+              </Text>
+            </View>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -358,151 +422,179 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fafafa',
   },
+  keyboardView: {
+    flex: 1,
+  },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
-    paddingVertical: 40,
+    paddingVertical: 48,
+  },
+  content: {
+    flex: 1,
+    justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 32,
   },
   logoContainer: {
+    marginBottom: 16,
+  },
+  logoCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   appName: {
     fontSize: 28,
-    fontWeight: 'bold',
-    color: '#262626',
-    marginTop: 16,
-    marginBottom: 4,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    letterSpacing: -0.5,
   },
-  appSubtitle: {
-    fontSize: 14,
-    color: '#8e8e8e',
-    fontWeight: '500',
+  appTagline: {
+    fontSize: 15,
+    color: '#888',
+    marginTop: 6,
+    fontWeight: '400',
   },
-  formContainer: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+  formCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
     padding: 24,
-    elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 24,
+    elevation: 3,
   },
-  formTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#262626',
-    textAlign: 'center',
-    marginBottom: 24,
-  },
-  inputContainer: {
-    marginBottom: 16,
+  inputWrapper: {
+    marginBottom: 18,
   },
   inputLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#262626',
+    color: '#555',
     marginBottom: 8,
+    marginLeft: 4,
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  inputContainerFocused: {
+    backgroundColor: '#fff',
+    borderColor: '#1a1a1a',
+  },
+  inputIcon: {
+    marginLeft: 14,
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#dbdbdb',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#262626',
-    backgroundColor: '#fafafa',
-  },
-  passwordContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#dbdbdb',
-    borderRadius: 8,
-    backgroundColor: '#fafafa',
-  },
-  passwordInput: {
     flex: 1,
+    paddingVertical: 14,
     paddingHorizontal: 12,
-    paddingVertical: 12,
     fontSize: 16,
-    color: '#262626',
+    color: '#1a1a1a',
   },
   eyeButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  submitButton: {
-    backgroundColor: '#0095f6',
-    borderRadius: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 24,
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#b3b3b3',
-  },
-  submitButtonText: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  switchContainer: {
-    alignItems: 'center',
-  },
-  switchText: {
-    fontSize: 14,
-    color: '#8e8e8e',
-    marginBottom: 4,
-  },
-  switchLink: {
-    fontSize: 14,
-    color: '#0095f6',
-    fontWeight: '600',
-  },
-  footer: {
-    alignItems: 'center',
-    marginTop: 40,
-  },
-  footerText: {
-    fontSize: 12,
-    color: '#8e8e8e',
-    textAlign: 'center',
-    lineHeight: 16,
+    padding: 14,
   },
   rememberMeContainer: {
-    marginBottom: 8,
-    marginTop: 8,
-  },
-  checkboxContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 20,
   },
   checkbox: {
-    width: 18,
-    height: 18,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     borderWidth: 2,
-    borderColor: '#dbdbdb',
-    borderRadius: 3,
-    marginRight: 8,
+    borderColor: '#ddd',
+    marginRight: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fafafa',
+    backgroundColor: '#f5f5f5',
   },
   checkboxChecked: {
-    backgroundColor: '#0095f6',
-    borderColor: '#0095f6',
+    backgroundColor: '#1a1a1a',
+    borderColor: '#1a1a1a',
   },
   rememberMeText: {
     fontSize: 14,
-    color: '#262626',
+    color: '#555',
     fontWeight: '500',
+  },
+  submitButton: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    paddingVertical: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  submitButtonDisabled: {
+    backgroundColor: '#ccc',
+  },
+  submitButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  submitIcon: {
+    marginLeft: 8,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 24,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#eee',
+  },
+  dividerText: {
+    color: '#aaa',
+    fontSize: 13,
+    marginHorizontal: 16,
+    fontWeight: '500',
+  },
+  switchButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e5e5e5',
+    backgroundColor: '#fafafa',
+  },
+  switchButtonText: {
+    color: '#555',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  footer: {
+    marginTop: 24,
+    paddingHorizontal: 16,
+  },
+  footerText: {
+    fontSize: 12,
+    color: '#aaa',
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });

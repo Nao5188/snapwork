@@ -9,32 +9,32 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#262626',
-        tabBarInactiveTintColor: '#8e8e8e',
+        tabBarActiveTintColor: '#1a1a1a',
+        tabBarInactiveTintColor: '#bbb',
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: '#ffffff',
-          borderTopWidth: 0.5,
-          borderTopColor: '#dbdbdb',
-          height: Platform.OS === 'ios' ? 85 : 60,
-          paddingBottom: Platform.OS === 'ios' ? 20 : 5,
-          paddingTop: 5,
+          backgroundColor: '#fff',
+          borderTopWidth: 1,
+          borderTopColor: '#f0f0f0',
+          height: Platform.OS === 'ios' ? 88 : 64,
+          paddingBottom: Platform.OS === 'ios' ? 24 : 8,
+          paddingTop: 8,
         },
         tabBarLabelStyle: {
-          fontSize: 10,
+          fontSize: 11,
           fontWeight: '500',
         },
       }}>
       <Tabs.Screen
         name="history"
         options={{
-          title: '',
+          title: 'ホーム',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons 
-              name={focused ? 'home' : 'home-outline'} 
-              size={24} 
-              color={color} 
+            <Ionicons
+              name={focused ? 'home' : 'home-outline'}
+              size={24}
+              color={color}
             />
           ),
         }}
@@ -42,12 +42,12 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: '',
+          title: 'カメラ',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons 
-              name={focused ? 'camera' : 'camera-outline'} 
-              size={24} 
-              color={color} 
+            <Ionicons
+              name={focused ? 'camera' : 'camera-outline'}
+              size={24}
+              color={color}
             />
           ),
         }}
@@ -55,12 +55,12 @@ export default function TabLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: '',
+          title: 'プロフィール',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons 
-              name={focused ? 'person' : 'person-outline'} 
-              size={24} 
-              color={color} 
+            <Ionicons
+              name={focused ? 'person' : 'person-outline'}
+              size={24}
+              color={color}
             />
           ),
         }}

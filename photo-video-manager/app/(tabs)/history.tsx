@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -9,6 +9,7 @@ import {
   RefreshControl,
   StatusBar,
   SafeAreaView,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -47,7 +48,17 @@ export default function HistoryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
-  // 画面がフォーカスされるたびに投稿を再読み込み
+  // アニメーション
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 600,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       loadPosts();
@@ -81,6 +92,17 @@ export default function HistoryScreen() {
       }
 
       if (postsData && postsData.length > 0) {
+        // デバッグ: 投稿データの確認
+        console.log('=== DEBUG: Posts Data ===');
+        postsData.forEach((post, index) => {
+          console.log(`Post ${index}:`, {
+            id: post.id,
+            title: post.title,
+            media_url: post.media_url,
+            menu_name: post.menu_name,
+          });
+        });
+
         const userIds = [...new Set(postsData.map(post => post.user_id))];
 
         const { data: usersData } = await supabase
@@ -98,39 +120,65 @@ export default function HistoryScreen() {
         const postsWithProfiles = await Promise.all(postsData.map(async post => {
           let userProfile = userMap.get(post.user_id);
 
-          let mediaItems = [];
+          let mediaItems: any[] = [];
 
-          mediaItems.push({
-            id: 'media_0',
-            media_url: post.media_url,
-            is_video: post.is_video,
-            display_order: 0,
-          });
+          // デバッグ: post.media_url の確認
+          console.log(`=== POST ${post.id} MEDIA DEBUG ===`);
+          console.log('post.media_url:', post.media_url);
+          console.log('post.media_url type:', typeof post.media_url);
 
-          if (post.menu_name && post.menu_name.includes('|EXTRA_MEDIA:')) {
-            const parts = post.menu_name.split('|EXTRA_MEDIA:');
-            const extraUrls = parts[1] ? parts[1].split(',') : [];
-
-            extraUrls.forEach((url: string, index: number) => {
-              if (url.trim()) {
-                mediaItems.push({
-                  id: `media_${index + 1}`,
-                  media_url: url.trim(),
-                  is_video: false,
-                  display_order: index + 1,
-                });
-              }
+          // post.media_url が有効な場合のみ追加
+          if (post.media_url && post.media_url.trim() !== '') {
+            mediaItems.push({
+              id: 'media_0',
+              media_url: post.media_url,
+              is_video: post.is_video,
+              display_order: 0,
             });
           }
 
+          // EXTRA_MEDIAの抽出（CATEGORIESが含まれている場合も正しく処理）
+          if (post.menu_name && post.menu_name.includes('|EXTRA_MEDIA:')) {
+            const extraMediaMatch = post.menu_name.match(/\|EXTRA_MEDIA:(.+)$/);
+            if (extraMediaMatch && extraMediaMatch[1]) {
+              const extraUrls = extraMediaMatch[1].split(',');
+
+              extraUrls.forEach((url: string, index: number) => {
+                if (url.trim()) {
+                  mediaItems.push({
+                    id: `media_${index + 1}`,
+                    media_url: url.trim(),
+                    is_video: false,
+                    display_order: index + 1,
+                  });
+                }
+              });
+            }
+          }
+
+          console.log('mediaItems after post.media_url:', mediaItems.length, mediaItems);
+
           try {
             const postMediaItems = await postService.getPostMedia(post.id);
+            console.log('postMediaItems from post_media table:', postMediaItems);
+
+            // post_media テーブルにデータがあり、かつ有効な media_url を持つアイテムがある場合のみ使用
             if (postMediaItems && postMediaItems.length > 0) {
-              mediaItems = postMediaItems;
+              const validItems = postMediaItems.filter(
+                (item: any) => item.media_url && item.media_url.trim() !== ''
+              );
+              console.log('validItems after filter:', validItems.length, validItems);
+              if (validItems.length > 0) {
+                mediaItems = validItems;
+              }
             }
           } catch (error) {
-            // post_mediaテーブルが存在しない場合は既存のmediaItemsを使用
+            console.log('Error getting post_media:', error);
+            // post_media テーブルにアクセスできない場合は既存の mediaItems を使用
           }
+
+          console.log('FINAL mediaItems:', mediaItems.length, mediaItems);
+          console.log('=== END POST MEDIA DEBUG ===')
 
           if (!userProfile) {
             if (post.user_id === user.id && currentProfile) {
@@ -159,9 +207,13 @@ export default function HistoryScreen() {
             }
           }
 
-          let displayMenuName = post.menu_name;
-          if (post.menu_name && post.menu_name.includes('|EXTRA_MEDIA:')) {
-            displayMenuName = post.menu_name.split('|EXTRA_MEDIA:')[0];
+          // displayMenuNameから|CATEGORIES:と|EXTRA_MEDIA:を除去
+          let displayMenuName = post.menu_name || '';
+          if (displayMenuName.includes('|CATEGORIES:')) {
+            displayMenuName = displayMenuName.split('|CATEGORIES:')[0];
+          }
+          if (displayMenuName.includes('|EXTRA_MEDIA:')) {
+            displayMenuName = displayMenuName.split('|EXTRA_MEDIA:')[0];
           }
 
           return {
@@ -227,13 +279,19 @@ export default function HistoryScreen() {
   };
 
   const handleLike = (postId: string) => {
-    // いいね機能の実装（バックエンド連携）
     console.log('Like post:', postId);
   };
 
   const renderPostItem = ({ item }: { item: PostHistoryItem }) => {
     const createdDate = new Date(item.created_at);
     const isOwner = item.isOwner || false;
+
+    // デバッグ: PostCardに渡すデータの確認
+    console.log('=== DEBUG: PostCard Data ===', {
+      id: item.id,
+      media_url: item.media_url,
+      mediaItems: item.mediaItems,
+    });
 
     const postCardData = {
       id: item.id,
@@ -274,7 +332,7 @@ export default function HistoryScreen() {
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIconContainer}>
-        <Ionicons name="camera-outline" size={64} color="#c7c7c7" />
+        <Ionicons name="camera-outline" size={48} color="#bbb" />
       </View>
       <Text style={styles.emptyTitle}>まだ投稿がありません</Text>
       <Text style={styles.emptySubtitle}>
@@ -283,45 +341,49 @@ export default function HistoryScreen() {
       <TouchableOpacity
         style={styles.emptyButton}
         onPress={() => router.push('/')}
+        activeOpacity={0.8}
       >
         <Text style={styles.emptyButtonText}>写真を撮影する</Text>
+        <Ionicons name="arrow-forward" size={18} color="#fff" style={styles.emptyButtonIcon} />
       </TouchableOpacity>
     </View>
   );
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <View style={styles.headerLeft}>
-        <Text style={styles.headerTitle}>ポスト</Text>
-      </View>
-      <View style={styles.headerRight}>
-        <TouchableOpacity style={styles.headerButton} onPress={onRefresh}>
-          <Ionicons name="sync-outline" size={24} color="#262626" />
-        </TouchableOpacity>
-      </View>
+      <Text style={styles.headerTitle}>ポスト</Text>
+      <TouchableOpacity
+        style={styles.refreshButton}
+        onPress={onRefresh}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="sync-outline" size={22} color="#1a1a1a" />
+      </TouchableOpacity>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
       {renderHeader()}
 
-      <FlatList
-        data={posts}
-        renderItem={renderPostItem}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={posts.length === 0 ? styles.emptyList : styles.list}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#262626"
-          />
-        }
-        ListEmptyComponent={renderEmptyState}
-      />
+      <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+        <FlatList
+          data={posts}
+          renderItem={renderPostItem}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={posts.length === 0 ? styles.emptyList : styles.list}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#1a1a1a"
+            />
+          }
+          ListEmptyComponent={renderEmptyState}
+        />
+      </Animated.View>
     </SafeAreaView>
   );
 }
@@ -329,35 +391,34 @@ export default function HistoryScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fafafa',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#dbdbdb',
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: '700',
-    color: '#262626',
-    fontFamily: 'System',
+    color: '#1a1a1a',
+    letterSpacing: -0.5,
   },
-  headerRight: {
-    flexDirection: 'row',
+  refreshButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f5f5f5',
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 16,
   },
-  headerButton: {
-    padding: 4,
+  content: {
+    flex: 1,
   },
   list: {
     paddingBottom: 20,
@@ -376,34 +437,43 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
-    borderWidth: 2,
-    borderColor: '#dbdbdb',
+    backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   emptyTitle: {
-    fontSize: 22,
-    fontWeight: '300',
-    color: '#262626',
-    marginBottom: 12,
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: 8,
   },
   emptySubtitle: {
-    fontSize: 14,
-    color: '#8e8e8e',
+    fontSize: 15,
+    color: '#888',
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 24,
+    lineHeight: 22,
+    marginBottom: 28,
   },
   emptyButton: {
-    backgroundColor: '#0095F6',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
     paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
   },
   emptyButtonText: {
-    color: '#ffffff',
-    fontSize: 14,
+    color: '#fff',
+    fontSize: 15,
     fontWeight: '600',
+  },
+  emptyButtonIcon: {
+    marginLeft: 8,
   },
 });
