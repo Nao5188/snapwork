@@ -10,6 +10,7 @@ import {
   StatusBar,
   SafeAreaView,
   Animated,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -105,9 +106,10 @@ export default function HistoryScreen() {
 
         const userIds = [...new Set(postsData.map(post => post.user_id))];
 
+        // public_profilesビューを使用（emailを除外した安全なビュー）
         const { data: usersData } = await supabase
-          .from('users')
-          .select('id, username, display_name, avatar_url, email')
+          .from('public_profiles')
+          .select('id, username, display_name, avatar_url')
           .in('id', userIds);
 
         const userMap = new Map();
@@ -352,13 +354,11 @@ export default function HistoryScreen() {
   const renderHeader = () => (
     <View style={styles.header}>
       <Text style={styles.headerTitle}>ポスト</Text>
-      <TouchableOpacity
-        style={styles.refreshButton}
-        onPress={onRefresh}
-        activeOpacity={0.7}
-      >
-        <Ionicons name="sync-outline" size={22} color="#1a1a1a" />
-      </TouchableOpacity>
+      <Image
+        source={require('@/assets/images/SalonCloudロゴ.png')}
+        style={styles.headerLogo}
+        resizeMode="contain"
+      />
     </View>
   );
 
@@ -409,13 +409,10 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
     letterSpacing: -0.5,
   },
-  refreshButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f5f5f5',
-    justifyContent: 'center',
-    alignItems: 'center',
+  headerLogo: {
+    width: 90,
+    height: 28,
+    marginRight: -12,
   },
   content: {
     flex: 1,
