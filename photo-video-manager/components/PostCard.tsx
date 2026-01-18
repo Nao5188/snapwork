@@ -53,7 +53,6 @@ interface PostCardProps {
   showProfile?: boolean;
 }
 
-// 相対時間を計算するヘルパー関数
 const getRelativeTime = (date: Date): string => {
   const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
@@ -92,8 +91,14 @@ export default function PostCard({
   const [likesCount, setLikesCount] = useState(post.likesCount || 0);
   const [showHeartAnimation, setShowHeartAnimation] = useState(false);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
+  const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
   const heartScale = useRef(new Animated.Value(0)).current;
   const lastTap = useRef<number>(0);
+
+  const handleImageError = (mediaId: string) => {
+    console.log('Image load error for:', mediaId);
+    setImageErrors(prev => new Set(prev).add(mediaId));
+  };
 
   const canEdit = () => {
     const now = Date.now();
@@ -102,20 +107,25 @@ export default function PostCard({
     return daysSincePost <= 30;
   };
 
-  // 複数メディアまたは単一メディアを取得
   const getMediaItems = (): MediaItem[] => {
     if (post.mediaItems && post.mediaItems.length > 0) {
       const sortedItems = post.mediaItems.sort((a: any, b: any) =>
         (a.displayOrder || a.display_order || 0) - (b.displayOrder || b.display_order || 0)
       );
-      return sortedItems.map((item: any) => ({
+      const mappedItems = sortedItems.map((item: any) => ({
         id: item.id,
         mediaUrl: item.mediaUrl || item.media_url,
         isVideo: item.isVideo || item.is_video,
         displayOrder: item.displayOrder || item.display_order || 0
       }));
+      // 有効な mediaUrl を持つアイテムのみをフィルタリング
+      const validItems = mappedItems.filter(item => item.mediaUrl && item.mediaUrl.trim() !== '');
+      if (validItems.length > 0) {
+        return validItems;
+      }
     }
-    if (post.mediaUri) {
+    // mediaItems が空または無効な場合、mediaUri にフォールバック
+    if (post.mediaUri && post.mediaUri.trim() !== '') {
       return [{
         id: '0',
         mediaUrl: post.mediaUri,
@@ -128,7 +138,6 @@ export default function PostCard({
 
   const mediaItems = getMediaItems();
 
-  // デフォルトアバター画像のURL
   const getAvatarSource = () => {
     if (post.userProfile?.avatar_url &&
         !post.userProfile.avatar_url.includes('placeholder') &&
@@ -138,13 +147,11 @@ export default function PostCard({
     return null;
   };
 
-  // ダブルタップでいいね
   const handleDoubleTap = () => {
     const now = Date.now();
     const DOUBLE_PRESS_DELAY = 300;
 
     if (now - lastTap.current < DOUBLE_PRESS_DELAY) {
-      // ダブルタップ検出
       if (!isLiked) {
         handleLike();
       }
@@ -188,12 +195,20 @@ export default function PostCard({
 
   const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => (
     <Pressable style={styles.mediaItem} onPress={handleDoubleTap}>
-      <Image
-        source={{ uri: item.mediaUrl }}
-        style={styles.mediaImage}
-        contentFit="cover"
-      />
-      {item.isVideo && (
+      {imageErrors.has(item.id) ? (
+        <View style={styles.imagePlaceholder}>
+          <Ionicons name="image-outline" size={48} color="#ccc" />
+          <Text style={styles.placeholderText}>画像を読み込めません</Text>
+        </View>
+      ) : (
+        <Image
+          source={{ uri: item.mediaUrl }}
+          style={styles.mediaImage}
+          contentFit="cover"
+          onError={() => handleImageError(item.id)}
+        />
+      )}
+      {item.isVideo && !imageErrors.has(item.id) && (
         <View style={styles.videoPlayButton}>
           <Ionicons name="play" size={32} color="white" />
         </View>
@@ -201,7 +216,6 @@ export default function PostCard({
     </Pressable>
   );
 
-  // ドットインジケーター
   const renderDotIndicators = () => {
     if (mediaItems.length <= 1) return null;
 
@@ -222,11 +236,11 @@ export default function PostCard({
 
   return (
     <View style={styles.container}>
-      {/* Profile Header - Instagram style */}
+      {/* Profile Header */}
       {showProfile && post.userProfile && (
         <View style={styles.profileHeader}>
-          <TouchableOpacity style={styles.profileLeft}>
-            <View style={styles.avatarRing}>
+          <TouchableOpacity style={styles.profileLeft} activeOpacity={0.7}>
+            <View style={styles.avatarContainer}>
               {getAvatarSource() ? (
                 <Image
                   source={getAvatarSource()}
@@ -235,7 +249,7 @@ export default function PostCard({
                 />
               ) : (
                 <View style={styles.defaultAvatar}>
-                  <Ionicons name="person" size={22} color="#666" />
+                  <Ionicons name="person" size={20} color="#999" />
                 </View>
               )}
             </View>
@@ -250,28 +264,34 @@ export default function PostCard({
           {showActions && canEdit() && (
             <TouchableOpacity
               style={styles.moreButton}
-              onPress={() => {
-                // 三点メニューをタップした時のアクション
-              }}
+              activeOpacity={0.7}
             >
-              <Ionicons name="ellipsis-horizontal" size={20} color="#262626" />
+              <Ionicons name="ellipsis-horizontal" size={20} color="#1a1a1a" />
             </TouchableOpacity>
           )}
         </View>
       )}
 
-      {/* Media - Larger Instagram style */}
+      {/* Media */}
       <View style={styles.mediaContainer}>
         {mediaItems.length > 0 ? (
           <>
             {mediaItems.length === 1 ? (
               <Pressable style={styles.singleMediaWrapper} onPress={handleDoubleTap}>
-                <Image
-                  source={{ uri: mediaItems[0].mediaUrl }}
-                  style={styles.singleMediaImage}
-                  contentFit="cover"
-                />
-                {mediaItems[0].isVideo && (
+                {imageErrors.has(mediaItems[0].id) ? (
+                  <View style={styles.imagePlaceholder}>
+                    <Ionicons name="image-outline" size={48} color="#ccc" />
+                    <Text style={styles.placeholderText}>画像を読み込めません</Text>
+                  </View>
+                ) : (
+                  <Image
+                    source={{ uri: mediaItems[0].mediaUrl }}
+                    style={styles.singleMediaImage}
+                    contentFit="cover"
+                    onError={() => handleImageError(mediaItems[0].id)}
+                  />
+                )}
+                {mediaItems[0].isVideo && !imageErrors.has(mediaItems[0].id) && (
                   <View style={styles.videoPlayButton}>
                     <Ionicons name="play" size={32} color="white" />
                   </View>
@@ -291,7 +311,6 @@ export default function PostCard({
               />
             )}
 
-            {/* ハートアニメーション */}
             {showHeartAnimation && (
               <Animated.View
                 style={[
@@ -303,7 +322,6 @@ export default function PostCard({
               </Animated.View>
             )}
 
-            {/* ドットインジケーター */}
             {renderDotIndicators()}
           </>
         ) : (
@@ -317,20 +335,20 @@ export default function PostCard({
       {/* Action Buttons */}
       <View style={styles.actionBar}>
         <View style={styles.actionLeft}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleLike}>
+          <TouchableOpacity style={styles.actionButton} onPress={handleLike} activeOpacity={0.7}>
             <Ionicons
-              name={isLiked ? "thumbs-up" : "thumbs-up-outline"}
-              size={24}
-              color={isLiked ? "#0095F6" : "#262626"}
+              name={isLiked ? "heart" : "heart-outline"}
+              size={26}
+              color={isLiked ? "#FF3B30" : "#1a1a1a"}
             />
           </TouchableOpacity>
           {showActions && canEdit() && (
             <>
-              <TouchableOpacity style={styles.actionButton} onPress={onEdit}>
-                <Ionicons name="create-outline" size={24} color="#262626" />
+              <TouchableOpacity style={styles.actionButton} onPress={onEdit} activeOpacity={0.7}>
+                <Ionicons name="create-outline" size={24} color="#1a1a1a" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.actionButton} onPress={onDelete}>
-                <Ionicons name="trash-outline" size={24} color="#ED4956" />
+              <TouchableOpacity style={styles.actionButton} onPress={onDelete} activeOpacity={0.7}>
+                <Ionicons name="trash-outline" size={24} color="#FF3B30" />
               </TouchableOpacity>
             </>
           )}
@@ -339,7 +357,7 @@ export default function PostCard({
 
       {/* Likes Count */}
       {likesCount > 0 && (
-        <Text style={styles.likesCount}>いいね！ {likesCount.toLocaleString()}件</Text>
+        <Text style={styles.likesCount}>いいね {likesCount.toLocaleString()}件</Text>
       )}
 
       {/* Caption */}
@@ -366,43 +384,40 @@ export default function PostCard({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#ffffff',
-    marginBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#efefef',
+    backgroundColor: '#fff',
+    marginBottom: 12,
+    borderRadius: 0,
   },
   profileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   profileLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
   },
-  avatarRing: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 2,
-    borderColor: '#C13584',
-    padding: 2,
-    marginRight: 10,
+  avatarContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+    overflow: 'hidden',
   },
   avatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#f0f0f0',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f5f5f5',
   },
   defaultAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#f0f0f0',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -410,14 +425,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   displayName: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#262626',
+    color: '#1a1a1a',
   },
   locationText: {
-    fontSize: 12,
-    color: '#262626',
-    marginTop: 1,
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
   },
   moreButton: {
     padding: 8,
@@ -426,7 +441,7 @@ const styles = StyleSheet.create({
     width: width,
     height: width,
     position: 'relative',
-    backgroundColor: '#fafafa',
+    backgroundColor: '#f5f5f5',
   },
   singleMediaWrapper: {
     width: '100%',
@@ -436,7 +451,7 @@ const styles = StyleSheet.create({
   singleMediaImage: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
   },
   mediaList: {
     width: '100%',
@@ -450,18 +465,18 @@ const styles = StyleSheet.create({
   mediaImage: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
   },
   videoPlayButton: {
     position: 'absolute',
     top: '50%',
     left: '50%',
-    marginTop: -24,
-    marginLeft: -24,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 24,
-    width: 48,
-    height: 48,
+    marginTop: -28,
+    marginLeft: -28,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 28,
+    width: 56,
+    height: 56,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -474,7 +489,7 @@ const styles = StyleSheet.create({
   },
   dotContainer: {
     position: 'absolute',
-    bottom: 12,
+    bottom: 16,
     width: '100%',
     flexDirection: 'row',
     justifyContent: 'center',
@@ -485,21 +500,36 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: 'rgba(255, 255, 255, 0.5)',
-    marginHorizontal: 2,
+    marginHorizontal: 3,
   },
   dotActive: {
-    backgroundColor: '#0095F6',
+    backgroundColor: '#fff',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   noMediaContainer: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
   },
   noMediaText: {
-    color: '#8e8e8e',
+    color: '#888',
     fontSize: 14,
+    marginTop: 8,
+  },
+  imagePlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    color: '#999',
+    fontSize: 13,
     marginTop: 8,
   },
   actionBar: {
@@ -507,7 +537,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
   },
   actionLeft: {
     flexDirection: 'row',
@@ -515,40 +545,38 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     padding: 8,
-    marginRight: 8,
+    marginRight: 4,
   },
   likesCount: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#262626',
+    color: '#1a1a1a',
     paddingHorizontal: 16,
     marginBottom: 6,
   },
   captionContainer: {
     paddingHorizontal: 16,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   caption: {
     fontSize: 14,
-    color: '#262626',
-    lineHeight: 18,
+    color: '#1a1a1a',
+    lineHeight: 20,
   },
   captionUsername: {
     fontWeight: '600',
   },
   captionMore: {
     fontSize: 14,
-    color: '#8e8e8e',
-    lineHeight: 18,
-    marginTop: 2,
+    color: '#888',
+    lineHeight: 20,
+    marginTop: 4,
   },
   timestamp: {
-    fontSize: 11,
-    color: '#8e8e8e',
+    fontSize: 12,
+    color: '#aaa',
     paddingHorizontal: 16,
-    paddingBottom: 12,
+    paddingBottom: 16,
     marginTop: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.2,
   },
 });

@@ -143,6 +143,87 @@ export const fileStorageService = {
       // 削除エラーは致命的でないので続行
     }
   },
+
+  // 投稿画像をアップロード
+  async uploadPostImage(userId: string, imageUri: string, postId?: string): Promise<string> {
+    try {
+      console.log('Uploading post image for user:', userId);
+      console.log('Image URI:', imageUri);
+
+      // ローカルファイルでない場合はそのまま返す
+      if (!imageUri.startsWith('file://')) {
+        console.log('Not a local file, returning as-is');
+        return imageUri;
+      }
+
+      // ファイル拡張子を取得
+      const fileExtension = imageUri.split('.').pop()?.split('?')[0] || 'jpg';
+      // ユーザーIDをフォルダとして使用
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(7);
+      const fileName = `${userId}/${postId || 'temp'}_${timestamp}_${randomStr}.${fileExtension}`;
+
+      console.log('Uploading file:', fileName);
+
+      // fetchを使用してローカルファイルを読み込み、blobに変換
+      const response = await fetch(imageUri);
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.statusText}`);
+      }
+
+      // Blobを取得
+      const blob = await response.blob();
+      console.log('Blob size:', blob.size, 'type:', blob.type);
+
+      // FileReaderを使用してBlobをArrayBufferに変換
+      const fileReaderPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+        const fileReader = new FileReader();
+        fileReader.onload = () => {
+          if (fileReader.result instanceof ArrayBuffer) {
+            resolve(fileReader.result);
+          } else {
+            reject(new Error('FileReader did not return ArrayBuffer'));
+          }
+        };
+        fileReader.onerror = () => reject(fileReader.error);
+        fileReader.readAsArrayBuffer(blob);
+      });
+
+      const arrayBuffer = await fileReaderPromise;
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      console.log('Converted to Uint8Array, size:', uint8Array.length);
+
+      // Supabase Storageにアップロード (posts バケットを使用)
+      const { data, error } = await supabase.storage
+        .from('posts')
+        .upload(fileName, uint8Array, {
+          contentType: blob.type || `image/${fileExtension}`,
+          upsert: true
+        });
+
+      if (error) {
+        console.error('Upload error:', error);
+        throw error;
+      }
+
+      console.log('Upload successful:', data);
+
+      // 公開URLを取得
+      const { data: publicUrlData } = supabase.storage
+        .from('posts')
+        .getPublicUrl(fileName);
+
+      const publicUrl = publicUrlData.publicUrl;
+      console.log('Public URL:', publicUrl);
+
+      return publicUrl;
+    } catch (error) {
+      console.error('Failed to upload post image:', error);
+      throw error;
+    }
+  },
 };
 
 // ユーザー関連の操作
@@ -665,14 +746,20 @@ export const authService = {
       throw new Error('Display name already exists');
     }
 
+    // サインアップ時にmetadataにユーザー情報を渡す
+    // Database Triggerがこの情報を使ってプロフィールを自動作成
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         emailRedirectTo: undefined, // メール確認リダイレクトを無効化
+        data: {
+          username: userData.username,
+          display_name: userData.display_name,
+        }
       }
     });
-    
+
     if (error) throw error;
 
     // data.userがnullの場合や、既存ユーザーの場合の追加チェック
@@ -684,54 +771,17 @@ export const authService = {
     if (data.user.identities && data.user.identities.length === 0) {
       throw new Error('User already registered');
     }
-    
-    // ユーザープロフィールをusersテーブルに作成
-    try {
-      console.log('Creating user profile for:', data.user.id);
-      console.log('Session after signUp:', data.session ? 'Available' : 'Not available');
-      
-      const { error: insertError } = await supabase.from('users').insert({
-        id: data.user.id,
-        email,
-        username: userData.username,
-        display_name: userData.display_name,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      
-      if (insertError) {
-        console.error('User profile creation error:', insertError);
-        
-        // RLSエラーの場合は説明付きエラー
-        if (insertError.code === '42501') {
-          throw new Error(
-            'アカウント作成が完了しませんでした。データベースの設定に問題があります。\n\n' +
-            '解決方法:\n' +
-            '1. Supabase Dashboard → Table Editor → users テーブル\n' +
-            '2. RLS タブで以下のポリシーを追加:\n' +
-            '   CREATE POLICY "Users can insert own profile" ON users\n' +
-            '   FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);'
-          );
-        }
-        
-        throw insertError;
-      }
-      
-      console.log('✅ User profile created successfully');
-    } catch (profileError) {
-      console.error('Failed to create user profile:', profileError);
-      
-      // 認証ユーザーをクリーンアップ（プロフィール作成に失敗した場合）
-      try {
-        await supabase.auth.signOut();
-        console.log('Cleaned up failed user account');
-      } catch (cleanupError) {
-        console.error('Failed to cleanup user account:', cleanupError);
-      }
-      
-      throw profileError;
-    }
-    
+
+    // Database Triggerがプロフィールを自動作成する
+    // トリガーが SECURITY DEFINER で設定されているため、
+    // auth.users への INSERT と同時にプロフィールが作成される
+    console.log('✅ User created successfully. Profile created by database trigger.');
+    console.log('User ID:', data.user.id);
+
+    // 注意: signUp直後はセッションがない場合があるため、
+    // プロフィールの存在確認はスキップする（トリガーを信頼）
+    // ログイン時にプロフィールの存在確認を行う
+
     return data;
   },
 

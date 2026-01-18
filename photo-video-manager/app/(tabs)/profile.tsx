@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,7 +11,8 @@ import {
   Modal,
   KeyboardAvoidingView,
   ScrollView,
-  Platform
+  Platform,
+  Animated,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,7 +22,7 @@ import { authService, userService, postService, fileStorageService } from '@/lib
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
-const itemSize = (width - 6) / numColumns;
+const itemSize = (width - 4) / numColumns;
 
 interface UserPost {
   id: string;
@@ -51,52 +52,41 @@ export default function ProfileScreen() {
   const [editAvatar, setEditAvatar] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
+
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     loadUserProfile();
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 600,
+      useNativeDriver: true,
+    }).start();
   }, []);
 
   const loadUserProfile = async () => {
     try {
       setLoading(true);
-      
-      // 現在のユーザーを取得
+
       const { data: { user } } = await authService.getCurrentUser();
-      
+
       if (!user) {
         router.replace('/login');
         return;
       }
 
-      // ユーザープロフィールを取得
-      console.log('Loading profile for user:', user.id);
       const profile = await userService.getProfile(user.id);
-      console.log('Profile data:', profile);
-      
-      // ユーザーの投稿を取得
       const posts = await postService.getUserPosts(user.id);
-      
-      // 投稿数を取得
       const postsCount = await postService.getUserPostsCount(user.id);
 
-      // プロフィール写真のURL処理を改善
-      // ローカルファイルパスまたはplaceholderの場合はデフォルト画像を使用
       let avatarUrl = profile.avatar_url;
 
       if (!avatarUrl ||
           avatarUrl.startsWith('file://') ||
           avatarUrl.includes('placeholder')) {
-        // デフォルトアバター画像を生成
-        avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.display_name || profile.username || 'User')}&size=200&background=4A90E2&color=fff&bold=true`;
+        avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.display_name || profile.username || 'User')}&size=200&background=1a1a1a&color=fff&bold=true`;
       }
-
-      console.log('Setting user profile:', {
-        id: profile.id,
-        username: profile.username,
-        displayName: profile.display_name,
-        avatar: avatarUrl,
-        postsCount: postsCount,
-      });
 
       setUserProfile({
         id: profile.id,
@@ -106,7 +96,6 @@ export default function ProfileScreen() {
         postsCount: postsCount,
       });
 
-      // 投稿データを変換
       const formattedPosts: UserPost[] = posts.map(post => ({
         id: post.id,
         title: post.title,
@@ -120,20 +109,18 @@ export default function ProfileScreen() {
       setUserPosts(formattedPosts);
     } catch (error) {
       console.error('Error loading user profile:', error);
-      
-      // プロフィール取得に失敗した場合のフォールバック処理
+
       const { data: { user: fallbackUser } } = await authService.getCurrentUser();
       if (fallbackUser) {
-        console.log('Setting fallback profile for user:', fallbackUser.id);
         setUserProfile({
           id: fallbackUser.id,
           username: `user_${fallbackUser.id.slice(-6)}`,
           displayName: `ユーザー${fallbackUser.id.slice(-4)}`,
-          avatar: `https://via.placeholder.com/150x150/4A90E2/FFFFFF?text=U`,
+          avatar: `https://ui-avatars.com/api/?name=User&size=200&background=1a1a1a&color=fff`,
           postsCount: 0,
         });
       }
-      
+
       Alert.alert('警告', 'プロフィール情報の一部を読み込めませんでした。');
     } finally {
       setLoading(false);
@@ -168,9 +155,9 @@ export default function ProfileScreen() {
 
   const handleSaveProfile = async () => {
     if (!userProfile) return;
-    
+
     setUploading(true);
-    
+
     if (!editDisplayName.trim()) {
       Alert.alert('エラー', '表示名を入力してください。');
       setUploading(false);
@@ -188,7 +175,6 @@ export default function ProfileScreen() {
     }
 
     try {
-      // ユーザー名の重複チェック
       const isUsernameAvailable = await userService.checkUsernameAvailability(editUsername.trim().toLowerCase(), userProfile.id);
       if (!isUsernameAvailable) {
         Alert.alert('エラー', 'このユーザー名は既に使用されています。');
@@ -196,7 +182,6 @@ export default function ProfileScreen() {
         return;
       }
 
-      // 表示名の重複チェック
       const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(editDisplayName.trim(), userProfile.id);
       if (!isDisplayNameAvailable) {
         Alert.alert('エラー', 'この表示名は既に使用されています。');
@@ -205,59 +190,30 @@ export default function ProfileScreen() {
       }
 
       let avatarUrl = userProfile.avatar;
-      
-      // 新しい画像が選択されている場合の処理
+
       if (editAvatar && editAvatar !== userProfile.avatar) {
-        console.log('New avatar selected:', editAvatar);
-        
         try {
-          // ローカル画像をSupabase Storageにアップロード
-          console.log('Uploading avatar to Supabase Storage...');
-          console.log('User ID:', userProfile.id);
-          console.log('Edit Avatar Path:', editAvatar);
-
           avatarUrl = await fileStorageService.uploadAvatar(userProfile.id, editAvatar);
-          console.log('Avatar uploaded successfully:', avatarUrl);
 
-          // 古いアバター画像を削除（もしあれば）
-          if (userProfile.avatar && !userProfile.avatar.startsWith('file://') && !userProfile.avatar.includes('placeholder')) {
+          if (userProfile.avatar && !userProfile.avatar.startsWith('file://') && !userProfile.avatar.includes('placeholder') && !userProfile.avatar.includes('ui-avatars.com')) {
             try {
-              console.log('Deleting old avatar:', userProfile.avatar);
               await fileStorageService.deleteAvatar(userProfile.avatar);
-              console.log('Old avatar deleted successfully');
             } catch (deleteError) {
               console.warn('Failed to delete old avatar:', deleteError);
             }
           }
         } catch (uploadError: any) {
-          console.error('Avatar upload failed:', uploadError);
-          console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
-          Alert.alert(
-            'アップロードエラー',
-            `プロフィール画像のアップロードに失敗しました。\nエラー: ${uploadError?.message || 'Unknown error'}\nインターネット接続を確認してもう一度お試しください。`
-          );
+          Alert.alert('アップロードエラー', `プロフィール画像のアップロードに失敗しました。`);
           setUploading(false);
           return;
         }
       }
-      
-      console.log('Final avatar URL:', avatarUrl);
-
-      // プロフィールを更新
-      console.log('Updating profile in database...');
-      console.log('Update data:', {
-        display_name: editDisplayName.trim(),
-        username: editUsername.trim().toLowerCase(),
-        avatar_url: avatarUrl,
-      });
 
       await userService.updateProfile(userProfile.id, {
         display_name: editDisplayName.trim(),
         username: editUsername.trim().toLowerCase(),
         avatar_url: avatarUrl,
       });
-
-      console.log('Profile updated successfully in database');
 
       const updatedProfile = {
         ...userProfile,
@@ -266,21 +222,17 @@ export default function ProfileScreen() {
         avatar: avatarUrl
       };
 
-      console.log('Updating local profile state:', updatedProfile);
       setUserProfile(updatedProfile);
 
       setIsEditModalVisible(false);
       setEditAvatar(null);
       Alert.alert('成功', 'プロフィールを更新しました。');
     } catch (error: any) {
-      console.error('Profile update error:', error);
-      console.error('Update error details:', JSON.stringify(error, null, 2));
-      Alert.alert('エラー', `プロフィールの更新に失敗しました。\nエラー: ${error?.message || 'Unknown error'}`);
+      Alert.alert('エラー', `プロフィールの更新に失敗しました。`);
     } finally {
       setUploading(false);
     }
   };
-
 
   const handleLogout = () => {
     Alert.alert(
@@ -296,7 +248,6 @@ export default function ProfileScreen() {
               await authService.signOut();
               router.replace('/login');
             } catch (error) {
-              console.error('Logout error:', error);
               Alert.alert('エラー', 'ログアウトに失敗しました。');
             }
           }
@@ -324,12 +275,8 @@ export default function ProfileScreen() {
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除', style: 'destructive', onPress: async () => {
           try {
-            console.log('Deleting post from profile:', post.id);
-
-            // まずローカル状態を更新（UI即座に反映）
             setUserPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
 
-            // プロフィールの投稿数も更新
             if (userProfile) {
               setUserProfile({
                 ...userProfile,
@@ -337,21 +284,11 @@ export default function ProfileScreen() {
               });
             }
 
-            // Supabaseから削除
             await postService.deletePost(post.id);
-
-            console.log('Post deleted successfully from profile:', post.id);
             Alert.alert('削除完了', 'ポストを削除しました。');
           } catch (error: any) {
-            console.error('Error deleting post from profile:', error);
-
-            // 削除失敗時はプロフィールを再読み込み
             loadUserProfile();
-
-            Alert.alert(
-              'エラー',
-              `削除に失敗しました。\n${error?.message || 'もう一度お試しください。'}`
-            );
+            Alert.alert('エラー', `削除に失敗しました。`);
           }
         }}
       ]
@@ -372,7 +309,7 @@ export default function ProfileScreen() {
         />
         {item.isVideo && (
           <View style={styles.videoIndicator}>
-            <Ionicons name="play" size={16} color="white" />
+            <Ionicons name="play" size={14} color="white" />
           </View>
         )}
       </TouchableOpacity>
@@ -382,14 +319,14 @@ export default function ProfileScreen() {
           onPress={() => handleEditPost(item.id)}
           activeOpacity={0.8}
         >
-          <Ionicons name="create-outline" size={18} color="white" />
+          <Ionicons name="create-outline" size={16} color="white" />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.deletePostButton}
           onPress={() => handleDeletePost(item)}
           activeOpacity={0.8}
         >
-          <Ionicons name="trash-outline" size={18} color="white" />
+          <Ionicons name="trash-outline" size={16} color="white" />
         </TouchableOpacity>
       </View>
     </View>
@@ -397,35 +334,53 @@ export default function ProfileScreen() {
 
   const renderHeader = () => {
     if (!userProfile) return null;
-    
+
     return (
       <View style={styles.header}>
-        <View style={styles.avatarContainer}>
-          <Image
-            source={{ uri: userProfile.avatar }}
-            style={styles.avatar}
-            contentFit="cover"
-          />
+        <View style={styles.avatarSection}>
+          <View style={styles.avatarWrapper}>
+            <Image
+              source={{ uri: userProfile.avatar }}
+              style={styles.avatar}
+              contentFit="cover"
+            />
+          </View>
         </View>
-        
+
         <Text style={styles.displayName}>
           {userProfile.displayName || userProfile.username || 'ユーザー'}
         </Text>
-        
+        <Text style={styles.username}>@{userProfile.username}</Text>
+
         <View style={styles.statsContainer}>
-          <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
-          <Text style={styles.statLabel}>ポスト</Text>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
+            <Text style={styles.statLabel}>投稿</Text>
+          </View>
         </View>
-        
+
         <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.editButton} onPress={handleEditProfile}>
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={handleEditProfile}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="create-outline" size={18} color="#1a1a1a" />
             <Text style={styles.editButtonText}>プロフィールを編集</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={16} color="#ff4444" />
-            <Text style={styles.logoutButtonText}>ログアウト</Text>
+
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-out-outline" size={18} color="#FF3B30" />
           </TouchableOpacity>
+        </View>
+
+        <View style={styles.postsHeader}>
+          <Ionicons name="grid-outline" size={20} color="#1a1a1a" />
+          <Text style={styles.postsHeaderText}>投稿一覧</Text>
         </View>
       </View>
     );
@@ -434,6 +389,9 @@ export default function ProfileScreen() {
   if (loading) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
+        <View style={styles.loadingIcon}>
+          <Ionicons name="person-outline" size={32} color="#bbb" />
+        </View>
         <Text style={styles.loadingText}>読み込み中...</Text>
       </View>
     );
@@ -450,20 +408,22 @@ export default function ProfileScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>
-        <Text style={styles.username}>{userProfile.displayName}</Text>
+        <Text style={styles.topBarTitle}>{userProfile.displayName}</Text>
       </View>
 
-      <FlatList
-        data={userPosts}
-        renderItem={renderPostItem}
-        keyExtractor={(item) => item.id}
-        numColumns={numColumns}
-        ListHeaderComponent={renderHeader}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
-      />
-      
+      <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+        <FlatList
+          data={userPosts}
+          renderItem={renderPostItem}
+          keyExtractor={(item) => item.id}
+          numColumns={numColumns}
+          ListHeaderComponent={renderHeader}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
+        />
+      </Animated.View>
+
       <Modal
         animationType="slide"
         transparent={true}
@@ -476,11 +436,11 @@ export default function ProfileScreen() {
         >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <TouchableOpacity onPress={handleCancelEdit}>
+              <TouchableOpacity onPress={handleCancelEdit} activeOpacity={0.7}>
                 <Text style={styles.cancelText}>キャンセル</Text>
               </TouchableOpacity>
               <Text style={styles.modalTitle}>プロフィール編集</Text>
-              <TouchableOpacity onPress={handleSaveProfile} disabled={uploading}>
+              <TouchableOpacity onPress={handleSaveProfile} disabled={uploading} activeOpacity={0.7}>
                 <Text style={[styles.saveText, uploading && styles.saveTextDisabled]}>
                   {uploading ? '保存中...' : '保存'}
                 </Text>
@@ -497,39 +457,67 @@ export default function ProfileScreen() {
                 <TouchableOpacity onPress={handleSelectAvatar} activeOpacity={0.8}>
                   <View style={styles.avatarEditWrapper}>
                     <Image
-                      source={{ uri: editAvatar || 'https://via.placeholder.com/150x150/cccccc/ffffff?text=画像なし' }}
+                      source={{ uri: editAvatar || 'https://ui-avatars.com/api/?name=User&size=200&background=f5f5f5&color=999' }}
                       style={styles.avatarEdit}
                       contentFit="cover"
                     />
                     <View style={styles.avatarEditOverlay}>
-                      <Ionicons name="camera" size={24} color="white" />
-                      <Text style={styles.avatarEditText}>変更</Text>
+                      <Ionicons name="camera-outline" size={24} color="white" />
                     </View>
                   </View>
                 </TouchableOpacity>
+                <Text style={styles.avatarEditHint}>タップして変更</Text>
               </View>
 
-              <View style={styles.inputContainer}>
+              <View style={styles.inputWrapper}>
                 <Text style={styles.inputLabel}>表示名</Text>
-                <TextInput
-                  style={styles.input}
-                  value={editDisplayName}
-                  onChangeText={setEditDisplayName}
-                  placeholder="表示名を入力"
-                  maxLength={30}
-                />
+                <View style={[
+                  styles.inputContainer,
+                  focusedField === 'displayName' && styles.inputContainerFocused,
+                ]}>
+                  <Ionicons
+                    name="person-outline"
+                    size={20}
+                    color={focusedField === 'displayName' ? '#1a1a1a' : '#999'}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    value={editDisplayName}
+                    onChangeText={setEditDisplayName}
+                    placeholder="表示名を入力"
+                    placeholderTextColor="#bbb"
+                    maxLength={30}
+                    onFocus={() => setFocusedField('displayName')}
+                    onBlur={() => setFocusedField(null)}
+                  />
+                </View>
               </View>
 
-              <View style={styles.inputContainer}>
+              <View style={styles.inputWrapper}>
                 <Text style={styles.inputLabel}>ユーザー名</Text>
-                <TextInput
-                  style={styles.input}
-                  value={editUsername}
-                  onChangeText={(text) => setEditUsername(text.toLowerCase())}
-                  placeholder="ユーザー名を入力"
-                  autoCapitalize="none"
-                  maxLength={20}
-                />
+                <View style={[
+                  styles.inputContainer,
+                  focusedField === 'username' && styles.inputContainerFocused,
+                ]}>
+                  <Ionicons
+                    name="at-outline"
+                    size={20}
+                    color={focusedField === 'username' ? '#1a1a1a' : '#999'}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    value={editUsername}
+                    onChangeText={(text) => setEditUsername(text.toLowerCase())}
+                    placeholder="ユーザー名を入力"
+                    placeholderTextColor="#bbb"
+                    autoCapitalize="none"
+                    maxLength={20}
+                    onFocus={() => setFocusedField('username')}
+                    onBlur={() => setFocusedField(null)}
+                  />
+                </View>
                 <Text style={styles.inputHint}>3文字以上、英数字とアンダースコアのみ</Text>
               </View>
             </ScrollView>
@@ -548,99 +536,147 @@ const styles = StyleSheet.create({
   topBar: {
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 50,
-    paddingBottom: 12,
-    backgroundColor: '#ffffff',
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#dbdbdb',
+    paddingBottom: 16,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
-  username: {
-    fontSize: 20,
+  topBarTitle: {
+    fontSize: 18,
     fontWeight: '600',
-    color: '#262626',
+    color: '#1a1a1a',
+  },
+  content: {
+    flex: 1,
   },
   scrollContent: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff',
   },
   header: {
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    backgroundColor: '#ffffff',
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+    backgroundColor: '#fff',
   },
-  avatarContainer: {
-    marginBottom: 12,
+  avatarSection: {
+    marginBottom: 16,
+  },
+  avatarWrapper: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 4,
   },
   avatar: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
   },
   displayName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#262626',
-    marginBottom: 8,
-    textAlign: 'center',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 4,
   },
-  statsContainer: {
-    alignItems: 'center',
+  username: {
+    fontSize: 14,
+    color: '#888',
     marginBottom: 16,
   },
+  statsContainer: {
+    flexDirection: 'row',
+    marginBottom: 20,
+  },
+  statItem: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
   statNumber: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#262626',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1a1a1a',
   },
   statLabel: {
-    fontSize: 14,
-    color: '#8e8e8e',
+    fontSize: 13,
+    color: '#888',
     marginTop: 2,
   },
   buttonContainer: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 12,
+    width: '100%',
+    maxWidth: 320,
   },
   editButton: {
-    backgroundColor: '#f0f0f0',
-    paddingVertical: 8,
-    paddingHorizontal: 24,
-    borderRadius: 6,
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f5f5f5',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    gap: 8,
   },
   editButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#262626',
-    textAlign: 'center',
+    color: '#1a1a1a',
   },
   logoutButton: {
-    backgroundColor: '#fff5f5',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
+    width: 48,
+    height: 48,
+    backgroundColor: '#FFF5F5',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ff4444',
+    borderColor: '#FFE5E5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
+    gap: 8,
+    marginTop: 24,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    width: '100%',
   },
-  logoutButtonText: {
-    fontSize: 14,
+  postsHeaderText: {
+    fontSize: 15,
     fontWeight: '600',
-    color: '#ff4444',
+    color: '#1a1a1a',
   },
   loadingContainer: {
     justifyContent: 'center',
     alignItems: 'center',
   },
+  loadingIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
   loadingText: {
-    fontSize: 16,
-    color: '#8e8e8e',
+    fontSize: 15,
+    color: '#888',
   },
   modalOverlay: {
     flex: 1,
@@ -648,7 +684,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '90%',
@@ -660,61 +696,75 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 16,
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#dbdbdb',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
-    color: '#262626',
+    color: '#1a1a1a',
   },
   cancelText: {
     fontSize: 16,
-    color: '#8e8e8e',
+    color: '#888',
   },
   saveText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#0095f6',
+    color: '#1a1a1a',
   },
   saveTextDisabled: {
-    color: '#b3b3b3',
+    color: '#ccc',
   },
   modalBody: {
     flex: 1,
   },
   modalBodyContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 30,
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 40,
   },
-  inputContainer: {
+  inputWrapper: {
     marginBottom: 20,
   },
   inputLabel: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#262626',
+    color: '#555',
     marginBottom: 8,
+    marginLeft: 4,
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f5f5f5',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  inputContainerFocused: {
+    backgroundColor: '#fff',
+    borderColor: '#1a1a1a',
+  },
+  inputIcon: {
+    marginLeft: 14,
   },
   input: {
-    borderWidth: 1,
-    borderColor: '#dbdbdb',
-    borderRadius: 8,
+    flex: 1,
+    paddingVertical: 14,
     paddingHorizontal: 12,
-    paddingVertical: 12,
     fontSize: 16,
-    color: '#262626',
-    backgroundColor: '#fafafa',
+    color: '#1a1a1a',
   },
   inputHint: {
     fontSize: 12,
-    color: '#8e8e8e',
-    marginTop: 4,
+    color: '#aaa',
+    marginTop: 6,
+    marginLeft: 4,
   },
   avatarEditContainer: {
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 28,
   },
   avatarEditWrapper: {
     position: 'relative',
@@ -723,7 +773,7 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
   },
   avatarEditOverlay: {
     position: 'absolute',
@@ -736,10 +786,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarEditText: {
-    color: 'white',
-    fontSize: 12,
-    marginTop: 4,
+  avatarEditHint: {
+    color: '#888',
+    fontSize: 13,
+    marginTop: 10,
   },
   row: {
     justifyContent: 'flex-start',
@@ -758,39 +808,39 @@ const styles = StyleSheet.create({
   postImage: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
   },
   postActionButtons: {
     position: 'absolute',
-    top: 8,
-    left: 8,
+    top: 6,
+    left: 6,
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   editPostButton: {
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 16,
-    width: 32,
-    height: 32,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 14,
+    width: 28,
+    height: 28,
     justifyContent: 'center',
     alignItems: 'center',
   },
   deletePostButton: {
-    backgroundColor: 'rgba(220, 53, 69, 0.9)',
-    borderRadius: 16,
-    width: 32,
-    height: 32,
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+    borderRadius: 14,
+    width: 28,
+    height: 28,
     justifyContent: 'center',
     alignItems: 'center',
   },
   videoIndicator: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
+    top: 6,
+    right: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 10,
+    width: 20,
+    height: 20,
     justifyContent: 'center',
     alignItems: 'center',
   },
