@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,6 +8,7 @@ import {
   Dimensions,
   Animated,
   Pressable,
+  AccessibilityInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,6 +46,7 @@ interface Post {
 
 interface PostCardProps {
   post: Post;
+  index?: number;
   onPress?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
@@ -80,6 +82,7 @@ const getRelativeTime = (date: Date): string => {
 
 export default function PostCard({
   post,
+  index = 0,
   onPress,
   onEdit,
   onDelete,
@@ -92,8 +95,47 @@ export default function PostCard({
   const [showHeartAnimation, setShowHeartAnimation] = useState(false);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
+  const [reduceMotion, setReduceMotion] = useState(false);
   const heartScale = useRef(new Animated.Value(0)).current;
   const lastTap = useRef<number>(0);
+
+  // 控えめなスライドインアニメーション
+  const slideAnim = useRef(new Animated.Value(15)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // いいねボタンのアニメーション
+  const likeButtonScale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    // reduceMotion設定を確認
+    AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
+  }, []);
+
+  useEffect(() => {
+    if (reduceMotion) {
+      // アニメーションを無効化
+      slideAnim.setValue(0);
+      fadeAnim.setValue(1);
+      return;
+    }
+
+    // 控えめなアニメーション（短い時間、少ない遅延）
+    const delay = Math.min(index * 50, 200); // 最大遅延を200msに制限
+    Animated.parallel([
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 250,
+        delay,
+        useNativeDriver: true,
+      }),
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 250,
+        delay,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [reduceMotion]);
 
   const handleImageError = (mediaId: string) => {
     console.log('Image load error for:', mediaId);
@@ -161,19 +203,21 @@ export default function PostCard({
   };
 
   const triggerHeartAnimation = () => {
+    if (reduceMotion) return;
+
     setShowHeartAnimation(true);
     heartScale.setValue(0);
     Animated.sequence([
       Animated.spring(heartScale, {
         toValue: 1,
         useNativeDriver: true,
-        tension: 100,
-        friction: 8,
+        tension: 120,
+        friction: 10,
       }),
       Animated.timing(heartScale, {
         toValue: 0,
-        duration: 200,
-        delay: 400,
+        duration: 150,
+        delay: 300,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -182,6 +226,23 @@ export default function PostCard({
   };
 
   const handleLike = () => {
+    // 控えめないいねボタンアニメーション
+    if (!reduceMotion) {
+      Animated.sequence([
+        Animated.timing(likeButtonScale, {
+          toValue: 0.85,
+          duration: 80,
+          useNativeDriver: true,
+        }),
+        Animated.spring(likeButtonScale, {
+          toValue: 1,
+          useNativeDriver: true,
+          friction: 5,
+          tension: 100,
+        }),
+      ]).start();
+    }
+
     setIsLiked(!isLiked);
     setLikesCount(prev => isLiked ? prev - 1 : prev + 1);
     onLike?.();
@@ -235,7 +296,15 @@ export default function PostCard({
   };
 
   return (
-    <View style={styles.container}>
+    <Animated.View
+      style={[
+        styles.container,
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }],
+        },
+      ]}
+    >
       {/* Profile Header */}
       {showProfile && post.userProfile && (
         <View style={styles.profileHeader}>
@@ -336,11 +405,13 @@ export default function PostCard({
       <View style={styles.actionBar}>
         <View style={styles.actionLeft}>
           <TouchableOpacity style={styles.actionButton} onPress={handleLike} activeOpacity={0.7}>
-            <Ionicons
-              name={isLiked ? "heart" : "heart-outline"}
-              size={26}
-              color={isLiked ? "#FF3B30" : "#1a1a1a"}
-            />
+            <Animated.View style={{ transform: [{ scale: likeButtonScale }] }}>
+              <Ionicons
+                name={isLiked ? "heart" : "heart-outline"}
+                size={26}
+                color={isLiked ? "#FF3B30" : "#1a1a1a"}
+              />
+            </Animated.View>
           </TouchableOpacity>
           {showActions && canEdit() && (
             <>
@@ -378,7 +449,7 @@ export default function PostCard({
 
       {/* Timestamp */}
       <Text style={styles.timestamp}>{getRelativeTime(post.createdAt)}</Text>
-    </View>
+    </Animated.View>
   );
 }
 

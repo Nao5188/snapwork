@@ -21,6 +21,7 @@ import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { postService, authService, fileStorageService } from '@/lib/supabase';
+import AnimatedButton from '@/components/AnimatedButton';
 
 const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
@@ -341,20 +342,24 @@ export default function CreatePostScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.7}>
+          <AnimatedButton
+            style={styles.backButton}
+            onPress={() => router.back()}
+            accessibilityLabel="戻る"
+          >
             <Ionicons name="chevron-back" size={24} color="#1a1a1a" />
-          </TouchableOpacity>
+          </AnimatedButton>
           <Text style={styles.headerTitle}>新しい投稿</Text>
-          <TouchableOpacity
+          <AnimatedButton
             style={[styles.submitButton, loading && styles.submitButtonDisabled]}
             onPress={handleSubmit}
             disabled={loading}
-            activeOpacity={0.8}
+            accessibilityLabel={loading ? '投稿中' : '投稿する'}
           >
             <Text style={styles.submitButtonText}>
               {loading ? '投稿中...' : '投稿'}
             </Text>
-          </TouchableOpacity>
+          </AnimatedButton>
         </View>
 
         <Animated.ScrollView
@@ -375,14 +380,22 @@ export default function CreatePostScreen() {
               ListFooterComponent={
                 mediaItems.length < 5 ? (
                   <View style={styles.mediaActions}>
-                    <TouchableOpacity style={styles.mediaActionButton} onPress={takePhoto} activeOpacity={0.7}>
+                    <AnimatedButton
+                      style={styles.mediaActionButton}
+                      onPress={takePhoto}
+                      accessibilityLabel="カメラで撮影"
+                    >
                       <Ionicons name="camera-outline" size={24} color="#1a1a1a" />
                       <Text style={styles.mediaActionText}>撮影</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.mediaActionButton} onPress={selectFromAlbum} activeOpacity={0.7}>
+                    </AnimatedButton>
+                    <AnimatedButton
+                      style={styles.mediaActionButton}
+                      onPress={selectFromAlbum}
+                      accessibilityLabel="アルバムから選択"
+                    >
                       <Ionicons name="albums-outline" size={24} color="#1a1a1a" />
                       <Text style={styles.mediaActionText}>アルバム</Text>
-                    </TouchableOpacity>
+                    </AnimatedButton>
                   </View>
                 ) : null
               }
@@ -435,7 +448,7 @@ export default function CreatePostScreen() {
               {/* Category Buttons */}
               <View style={styles.categoryContainer}>
                 {[...DEFAULT_MENU_CATEGORIES, ...customCategories].map((category) => (
-                  <TouchableOpacity
+                  <AnimatedButton
                     key={category}
                     style={[
                       styles.categoryButton,
@@ -444,8 +457,6 @@ export default function CreatePostScreen() {
                     ]}
                     onPress={() => toggleCategory(category)}
                     onLongPress={() => handleDeleteCategory(category)}
-                    delayLongPress={500}
-                    activeOpacity={0.7}
                   >
                     <Text style={[
                       styles.categoryButtonText,
@@ -453,25 +464,23 @@ export default function CreatePostScreen() {
                     ]}>
                       {category}
                     </Text>
-                  </TouchableOpacity>
+                  </AnimatedButton>
                 ))}
-                <TouchableOpacity
+                <AnimatedButton
                   style={styles.addCategoryButton}
                   onPress={() => setShowAddCategoryModal(true)}
-                  activeOpacity={0.7}
                 >
                   <Ionicons name="add" size={18} color="#1a1a1a" />
-                </TouchableOpacity>
+                </AnimatedButton>
               </View>
             </View>
 
             {/* Shooting Date */}
             <View style={styles.inputWrapper}>
               <Text style={styles.inputLabel}>撮影日時</Text>
-              <TouchableOpacity
+              <AnimatedButton
                 style={styles.dateButton}
                 onPress={() => setShowDatePicker(true)}
-                activeOpacity={0.7}
               >
                 <Ionicons name="calendar-outline" size={20} color="#888" />
                 <Text style={styles.dateButtonText}>
@@ -483,7 +492,7 @@ export default function CreatePostScreen() {
                     minute: '2-digit',
                   })}
                 </Text>
-              </TouchableOpacity>
+              </AnimatedButton>
             </View>
           </View>
         </Animated.ScrollView>
@@ -524,23 +533,21 @@ export default function CreatePostScreen() {
                 />
               </View>
               <View style={styles.modalButtons}>
-                <TouchableOpacity
+                <AnimatedButton
                   style={styles.modalCancelButton}
                   onPress={() => {
                     setNewCategoryName('');
                     setShowAddCategoryModal(false);
                   }}
-                  activeOpacity={0.7}
                 >
                   <Text style={styles.modalCancelButtonText}>キャンセル</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </AnimatedButton>
+                <AnimatedButton
                   style={styles.modalSubmitButton}
                   onPress={handleAddCategory}
-                  activeOpacity={0.8}
                 >
                   <Text style={styles.modalSubmitButtonText}>追加</Text>
-                </TouchableOpacity>
+                </AnimatedButton>
               </View>
             </View>
           </View>
@@ -559,7 +566,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     paddingVertical: 12,
     backgroundColor: '#fff',
     borderBottomWidth: 1,

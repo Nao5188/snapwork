@@ -16,6 +16,7 @@ export default function CameraScreen() {
   const [currentMode, setCurrentMode] = useState<'photo' | 'video'>('photo');
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [showGrid, setShowGrid] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   useEffect(() => {
@@ -344,18 +345,45 @@ export default function CameraScreen() {
           setIsCameraReady(false);
         }}
       >
+        {/* Grid Overlay */}
+        {showGrid && (
+          <View style={styles.gridOverlay} pointerEvents="none">
+            <View style={styles.gridRow}>
+              <View style={styles.gridCell} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+            </View>
+            <View style={[styles.gridRow, styles.gridRowBorderTop]}>
+              <View style={styles.gridCell} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+            </View>
+            <View style={[styles.gridRow, styles.gridRowBorderTop]}>
+              <View style={styles.gridCell} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+            </View>
+          </View>
+        )}
+
         {/* Top Controls */}
         <View style={styles.topControls}>
           <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
             <Ionicons name="close" size={28} color="white" />
           </TouchableOpacity>
-          
-          <View style={styles.emptySpace} />
-          
+
+          <TouchableOpacity style={styles.topButton} onPress={() => setShowGrid(!showGrid)}>
+            <Ionicons
+              name="grid-outline"
+              size={24}
+              color={showGrid ? '#FFD700' : 'rgba(255,255,255,0.6)'}
+            />
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.topButton} onPress={toggleFlash}>
-            <Ionicons 
-              name={flashMode === 'off' ? 'flash-off' : flashMode === 'on' ? 'flash' : 'flash-outline'} 
-              size={24} 
+            <Ionicons
+              name={flashMode === 'off' ? 'flash-off' : flashMode === 'on' ? 'flash' : 'flash-outline'}
+              size={24}
               color={flashMode === 'off' ? 'rgba(255,255,255,0.6)' : '#FFD700'}
             />
           </TouchableOpacity>
@@ -487,10 +515,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  emptySpace: {
-    width: 44,
-    height: 44,
   },
   topButton: {
     width: 44,
@@ -677,5 +701,28 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 30,
     fontStyle: 'italic',
+  },
+  gridOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 5,
+  },
+  gridRow: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  gridRowBorderTop: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.4)',
+  },
+  gridCell: {
+    flex: 1,
+  },
+  gridCellBorderLeft: {
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 255, 255, 0.4)',
   },
 });

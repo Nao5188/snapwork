@@ -1,10 +1,12 @@
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ストレージのキー定数
 const STORAGE_KEYS = {
-  REMEMBER_ME_ENABLED: '@remember_me_enabled',
-  USER_EMAIL: '@user_email',
-  AUTO_LOGIN_ENABLED: '@auto_login_enabled',
+  REMEMBER_ME_ENABLED: 'remember_me_enabled',
+  USER_EMAIL: 'user_email',
+  AUTO_LOGIN_ENABLED: 'auto_login_enabled',
 } as const;
 
 export interface RememberMeData {
@@ -13,21 +15,63 @@ export interface RememberMeData {
   autoLoginEnabled: boolean;
 }
 
-// Remember Me関連のストレージ操作
+// SecureStoreが利用可能かチェック
+const isSecureStoreAvailable = async (): Promise<boolean> => {
+  // Webプラットフォームではexpo-secure-storeは利用不可
+  if (Platform.OS === 'web') {
+    return false;
+  }
+  try {
+    await SecureStore.getItemAsync('__test__');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// セキュアストレージへの保存（フォールバック付き）
+const secureSetItem = async (key: string, value: string): Promise<void> => {
+  if (await isSecureStoreAvailable()) {
+    await SecureStore.setItemAsync(key, value);
+  } else {
+    // Web環境ではAsyncStorageにフォールバック（開発用）
+    await AsyncStorage.setItem(`@${key}`, value);
+  }
+};
+
+// セキュアストレージからの取得（フォールバック付き）
+const secureGetItem = async (key: string): Promise<string | null> => {
+  if (await isSecureStoreAvailable()) {
+    return await SecureStore.getItemAsync(key);
+  } else {
+    // Web環境ではAsyncStorageにフォールバック（開発用）
+    return await AsyncStorage.getItem(`@${key}`);
+  }
+};
+
+// セキュアストレージからの削除（フォールバック付き）
+const secureDeleteItem = async (key: string): Promise<void> => {
+  if (await isSecureStoreAvailable()) {
+    await SecureStore.deleteItemAsync(key);
+  } else {
+    // Web環境ではAsyncStorageにフォールバック（開発用）
+    await AsyncStorage.removeItem(`@${key}`);
+  }
+};
+
+// Remember Me関連のストレージ操作（セキュア版）
 export const storageService = {
   // Remember Me状態を保存
   async setRememberMe(email: string, rememberMe: boolean) {
     try {
-      await AsyncStorage.setItem(STORAGE_KEYS.REMEMBER_ME_ENABLED, JSON.stringify(rememberMe));
+      await secureSetItem(STORAGE_KEYS.REMEMBER_ME_ENABLED, JSON.stringify(rememberMe));
       if (rememberMe) {
-        await AsyncStorage.setItem(STORAGE_KEYS.USER_EMAIL, email);
-        await AsyncStorage.setItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED, JSON.stringify(true));
+        await secureSetItem(STORAGE_KEYS.USER_EMAIL, email);
+        await secureSetItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED, JSON.stringify(true));
       } else {
         // Remember Meが無効の場合は関連データを削除
-        await AsyncStorage.multiRemove([
-          STORAGE_KEYS.USER_EMAIL,
-          STORAGE_KEYS.AUTO_LOGIN_ENABLED,
-        ]);
+        await secureDeleteItem(STORAGE_KEYS.USER_EMAIL);
+        await secureDeleteItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED);
       }
     } catch (error) {
       console.error('Failed to save Remember Me state:', error);
@@ -38,15 +82,12 @@ export const storageService = {
   // Remember Me状態を取得
   async getRememberMe(): Promise<RememberMeData | null> {
     try {
-      const [rememberMeStr, email, autoLoginStr] = await AsyncStorage.multiGet([
-        STORAGE_KEYS.REMEMBER_ME_ENABLED,
-        STORAGE_KEYS.USER_EMAIL,
-        STORAGE_KEYS.AUTO_LOGIN_ENABLED,
-      ]);
+      const rememberMeStr = await secureGetItem(STORAGE_KEYS.REMEMBER_ME_ENABLED);
+      const userEmail = await secureGetItem(STORAGE_KEYS.USER_EMAIL);
+      const autoLoginStr = await secureGetItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED);
 
-      const rememberMe = rememberMeStr[1] ? JSON.parse(rememberMeStr[1]) : false;
-      const userEmail = email[1] || '';
-      const autoLoginEnabled = autoLoginStr[1] ? JSON.parse(autoLoginStr[1]) : false;
+      const rememberMe = rememberMeStr ? JSON.parse(rememberMeStr) : false;
+      const autoLoginEnabled = autoLoginStr ? JSON.parse(autoLoginStr) : false;
 
       if (rememberMe && userEmail) {
         return {
@@ -66,11 +107,9 @@ export const storageService = {
   // Remember Me状態をクリア
   async clearRememberMe() {
     try {
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.REMEMBER_ME_ENABLED,
-        STORAGE_KEYS.USER_EMAIL,
-        STORAGE_KEYS.AUTO_LOGIN_ENABLED,
-      ]);
+      await secureDeleteItem(STORAGE_KEYS.REMEMBER_ME_ENABLED);
+      await secureDeleteItem(STORAGE_KEYS.USER_EMAIL);
+      await secureDeleteItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED);
     } catch (error) {
       console.error('Failed to clear Remember Me state:', error);
       throw error;
@@ -80,7 +119,7 @@ export const storageService = {
   // 自動ログイン有効状態を設定
   async setAutoLoginEnabled(enabled: boolean) {
     try {
-      await AsyncStorage.setItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED, JSON.stringify(enabled));
+      await secureSetItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED, JSON.stringify(enabled));
     } catch (error) {
       console.error('Failed to set auto login enabled:', error);
       throw error;
@@ -90,7 +129,7 @@ export const storageService = {
   // 自動ログイン有効状態を取得
   async getAutoLoginEnabled(): Promise<boolean> {
     try {
-      const value = await AsyncStorage.getItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED);
+      const value = await secureGetItem(STORAGE_KEYS.AUTO_LOGIN_ENABLED);
       return value ? JSON.parse(value) : false;
     } catch (error) {
       console.error('Failed to get auto login enabled:', error);

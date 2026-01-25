@@ -13,12 +13,15 @@ import {
   ScrollView,
   Platform,
   Animated,
+  Image as RNImage,
+  SafeAreaView,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { authService, userService, postService, fileStorageService } from '@/lib/supabase';
+import AnimatedButton from '@/components/AnimatedButton';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
@@ -360,22 +363,22 @@ export default function ProfileScreen() {
         </View>
 
         <View style={styles.buttonContainer}>
-          <TouchableOpacity
+          <AnimatedButton
             style={styles.editButton}
             onPress={handleEditProfile}
-            activeOpacity={0.8}
+            accessibilityLabel="プロフィールを編集"
           >
             <Ionicons name="create-outline" size={18} color="#1a1a1a" />
             <Text style={styles.editButtonText}>プロフィールを編集</Text>
-          </TouchableOpacity>
+          </AnimatedButton>
 
-          <TouchableOpacity
+          <AnimatedButton
             style={styles.logoutButton}
             onPress={handleLogout}
-            activeOpacity={0.8}
+            accessibilityLabel="ログアウト"
           >
             <Ionicons name="log-out-outline" size={18} color="#FF3B30" />
-          </TouchableOpacity>
+          </AnimatedButton>
         </View>
 
         <View style={styles.postsHeader}>
@@ -406,9 +409,14 @@ export default function ProfileScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <View style={styles.topBar}>
-        <Text style={styles.topBarTitle}>{userProfile.displayName}</Text>
+        <Text style={styles.topBarTitle}>アカウント</Text>
+        <RNImage
+          source={require('@/assets/images/SalonCloudロゴ.png')}
+          style={styles.headerLogo}
+          resizeMode="contain"
+        />
       </View>
 
       <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
@@ -524,7 +532,7 @@ export default function ProfileScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -534,19 +542,27 @@ const styles = StyleSheet.create({
     backgroundColor: '#fafafa',
   },
   topBar: {
-    justifyContent: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 16,
+    paddingVertical: 12,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
   topBarTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 24,
+    fontWeight: '700',
     color: '#1a1a1a',
+    letterSpacing: -0.5,
+  },
+  headerLogo: {
+    width: 85,
+    height: 50,
+    marginRight: -12,
+    position: 'relative',
+    top: 5,
   },
   content: {
     flex: 1,
@@ -557,7 +573,7 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 24,
+    paddingVertical: 12,
     backgroundColor: '#fff',
   },
   avatarSection: {

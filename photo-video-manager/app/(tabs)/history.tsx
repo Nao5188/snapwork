@@ -284,16 +284,9 @@ export default function HistoryScreen() {
     console.log('Like post:', postId);
   };
 
-  const renderPostItem = ({ item }: { item: PostHistoryItem }) => {
+  const renderPostItem = ({ item, index }: { item: PostHistoryItem; index: number }) => {
     const createdDate = new Date(item.created_at);
     const isOwner = item.isOwner || false;
-
-    // デバッグ: PostCardに渡すデータの確認
-    console.log('=== DEBUG: PostCard Data ===', {
-      id: item.id,
-      media_url: item.media_url,
-      mediaItems: item.mediaItems,
-    });
 
     const postCardData = {
       id: item.id,
@@ -322,6 +315,7 @@ export default function HistoryScreen() {
     return (
       <PostCard
         post={postCardData}
+        index={index}
         showActions={isOwner}
         showProfile={true}
         onEdit={() => handleEditPost(item)}
@@ -398,7 +392,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 12,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
@@ -410,9 +404,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   headerLogo: {
-    width: 90,
-    height: 28,
+    width: 85,
+    height: 50,
     marginRight: -12,
+    position: 'relative',
+    top: 5,
   },
   content: {
     flex: 1,
