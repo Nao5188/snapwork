@@ -313,18 +313,10 @@ export default function LoginScreen() {
           >
             {/* Header */}
             <View style={styles.header}>
-              <Animated.View style={[styles.logoContainer, { transform: [{ scale: logoScale }] }]}>
-                <View style={styles.logoCircle}>
-                  <Ionicons name="camera" size={32} color="#1a1a1a" />
-                  <View style={styles.logoSecondIconContainer}>
-                    <Ionicons name="briefcase" size={16} color="#666" />
-                  </View>
-                </View>
-              </Animated.View>
-              <View style={styles.appNameContainer}>
+              <Animated.View style={[styles.appNameContainer, { transform: [{ scale: logoScale }] }]}>
                 <Text style={styles.appNameSnap}>Snap</Text>
                 <Text style={styles.appNameWork}>Work</Text>
-              </View>
+              </Animated.View>
               <Text style={styles.appTagline}>
                 {isSignUp ? '新しいアカウントを作成' : 'おかえりなさい'}
               </Text>
@@ -501,46 +493,29 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 32,
-  },
-  logoContainer: {
-    marginBottom: 16,
-  },
-  logoCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    ...shadows.medium,
-    position: 'relative',
-  },
-  logoSecondIconContainer: {
-    position: 'absolute',
-    bottom: 6,
-    right: 6,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 4,
-    ...shadows.small,
+    marginBottom: 40,
   },
   appNameContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
   },
   appNameSnap: {
-    ...typography.largeTitle,
+    fontSize: 42,
+    fontWeight: '800',
     color: '#1a1a1a',
+    letterSpacing: -1,
   },
   appNameWork: {
-    ...typography.largeTitle,
-    color: '#666',
+    fontSize: 42,
+    fontWeight: '300',
+    color: '#888',
+    letterSpacing: -1,
   },
   appTagline: {
-    ...typography.subhead,
+    fontSize: 15,
     color: colors.textSecondary,
-    marginTop: 8,
+    marginTop: 12,
+    letterSpacing: 0.5,
   },
   formCard: {
     backgroundColor: '#fff',

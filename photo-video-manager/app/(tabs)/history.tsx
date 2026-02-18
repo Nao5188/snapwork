@@ -17,6 +17,7 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { postService, authService, supabase, userService } from '@/lib/supabase';
 import PostCard from '@/components/PostCard';
+import { PostCardSkeleton } from '@/components/SkeletonLoader';
 
 interface PostHistoryItem {
   id: string;
@@ -47,6 +48,7 @@ export default function HistoryScreen() {
   const router = useRouter();
   const [posts, setPosts] = useState<PostHistoryItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // アニメーション
@@ -68,6 +70,7 @@ export default function HistoryScreen() {
 
   const loadPosts = async () => {
     try {
+      setLoading(true);
       const { data: { user } } = await authService.getCurrentUser();
 
       if (!user) {
@@ -209,10 +212,15 @@ export default function HistoryScreen() {
             }
           }
 
-          // displayMenuNameから|CATEGORIES:と|EXTRA_MEDIA:を除去
+          // displayMenuNameから|CATEGORIES:と|EXTRA_MEDIA:を除去し、カテゴリーを抽出
           let displayMenuName = post.menu_name || '';
+          let extractedCategories = '';
+
           if (displayMenuName.includes('|CATEGORIES:')) {
-            displayMenuName = displayMenuName.split('|CATEGORIES:')[0];
+            const parts = displayMenuName.split('|CATEGORIES:');
+            displayMenuName = parts[0];
+            // カテゴリー部分を抽出（EXTRA_MEDIAの前まで）
+            extractedCategories = parts[1]?.split('|EXTRA_MEDIA:')[0] || '';
           }
           if (displayMenuName.includes('|EXTRA_MEDIA:')) {
             displayMenuName = displayMenuName.split('|EXTRA_MEDIA:')[0];
@@ -221,6 +229,7 @@ export default function HistoryScreen() {
           return {
             ...post,
             menu_name: displayMenuName,
+            categories: extractedCategories,
             mediaItems,
             users: userProfile,
             isOwner: post.user_id === user.id
@@ -235,6 +244,8 @@ export default function HistoryScreen() {
       console.error('Error loading posts:', error);
       Alert.alert('エラー', '投稿データの読み込みに失敗しました。');
       setPosts([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -325,6 +336,14 @@ export default function HistoryScreen() {
     );
   };
 
+  const renderSkeletons = () => (
+    <View style={styles.skeletonContainer}>
+      <PostCardSkeleton />
+      <PostCardSkeleton />
+      <PostCardSkeleton />
+    </View>
+  );
+
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIconContainer}>
@@ -347,7 +366,6 @@ export default function HistoryScreen() {
 
   const renderHeader = () => (
     <View style={styles.header}>
-      <Text style={styles.headerTitle}>ポスト</Text>
       <Image
         source={require('@/assets/images/SalonCloudロゴ.png')}
         style={styles.headerLogo}
@@ -362,21 +380,25 @@ export default function HistoryScreen() {
       {renderHeader()}
 
       <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
-        <FlatList
-          data={posts}
-          renderItem={renderPostItem}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={posts.length === 0 ? styles.emptyList : styles.list}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#1a1a1a"
-            />
-          }
-          ListEmptyComponent={renderEmptyState}
-        />
+        {loading && posts.length === 0 ? (
+          renderSkeletons()
+        ) : (
+          <FlatList
+            data={posts}
+            renderItem={renderPostItem}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={posts.length === 0 ? styles.emptyList : styles.list}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#1a1a1a"
+              />
+            }
+            ListEmptyComponent={renderEmptyState}
+          />
+        )}
       </Animated.View>
     </SafeAreaView>
   );
@@ -389,26 +411,17 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#f5f5f5',
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    letterSpacing: -0.5,
+    borderBottomColor: '#e8e8e8',
   },
   headerLogo: {
-    width: 85,
-    height: 50,
-    marginRight: -12,
-    position: 'relative',
-    top: 5,
+    width: 88,
+    height: 32,
   },
   content: {
     flex: 1,
@@ -468,5 +481,8 @@ const styles = StyleSheet.create({
   },
   emptyButtonIcon: {
     marginLeft: 8,
+  },
+  skeletonContainer: {
+    paddingTop: 8,
   },
 });

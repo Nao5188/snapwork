@@ -9,9 +9,15 @@ import {
   Animated,
   Pressable,
   AccessibilityInfo,
+  Alert,
+  ActionSheetIOS,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import SkeletonLoader from './SkeletonLoader';
 
 const { width } = Dimensions.get('window');
 
@@ -95,8 +101,10 @@ export default function PostCard({
   const [showHeartAnimation, setShowHeartAnimation] = useState(false);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
+  const [imageLoading, setImageLoading] = useState<Set<string>>(new Set(['initial']));
   const [reduceMotion, setReduceMotion] = useState(false);
   const heartScale = useRef(new Animated.Value(0)).current;
+  const heartRotation = useRef(new Animated.Value(0)).current;
   const lastTap = useRef<number>(0);
 
   // 控えめなスライドインアニメーション
@@ -105,6 +113,7 @@ export default function PostCard({
 
   // いいねボタンのアニメーション
   const likeButtonScale = useRef(new Animated.Value(1)).current;
+  const likeButtonRotate = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     // reduceMotion設定を確認
@@ -140,6 +149,20 @@ export default function PostCard({
   const handleImageError = (mediaId: string) => {
     console.log('Image load error for:', mediaId);
     setImageErrors(prev => new Set(prev).add(mediaId));
+    setImageLoading(prev => {
+      const next = new Set(prev);
+      next.delete(mediaId);
+      return next;
+    });
+  };
+
+  const handleImageLoad = (mediaId: string) => {
+    setImageLoading(prev => {
+      const next = new Set(prev);
+      next.delete(mediaId);
+      next.delete('initial');
+      return next;
+    });
   };
 
   const canEdit = () => {
@@ -226,21 +249,52 @@ export default function PostCard({
   };
 
   const handleLike = () => {
-    // 控えめないいねボタンアニメーション
+    // 触覚フィードバック
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // 強化されたいいねボタンアニメーション
     if (!reduceMotion) {
+      // スケールアニメーション
       Animated.sequence([
         Animated.timing(likeButtonScale, {
-          toValue: 0.85,
-          duration: 80,
+          toValue: 0.7,
+          duration: 100,
           useNativeDriver: true,
+        }),
+        Animated.spring(likeButtonScale, {
+          toValue: 1.2,
+          useNativeDriver: true,
+          friction: 3,
+          tension: 150,
         }),
         Animated.spring(likeButtonScale, {
           toValue: 1,
           useNativeDriver: true,
-          friction: 5,
+          friction: 4,
           tension: 100,
         }),
       ]).start();
+
+      // いいね時はハートがバウンドする
+      if (!isLiked) {
+        Animated.sequence([
+          Animated.timing(likeButtonRotate, {
+            toValue: -0.1,
+            duration: 50,
+            useNativeDriver: true,
+          }),
+          Animated.timing(likeButtonRotate, {
+            toValue: 0.1,
+            duration: 100,
+            useNativeDriver: true,
+          }),
+          Animated.timing(likeButtonRotate, {
+            toValue: 0,
+            duration: 50,
+            useNativeDriver: true,
+          }),
+        ]).start();
+      }
     }
 
     setIsLiked(!isLiked);
@@ -250,8 +304,38 @@ export default function PostCard({
 
   const handleScroll = (event: any) => {
     const offsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(offsetX / width);
+    const mediaWidth = width - 32;
+    const index = Math.round(offsetX / mediaWidth);
     setCurrentMediaIndex(index);
+  };
+
+  const handleMorePress = () => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['キャンセル', '編集', '削除'],
+          destructiveButtonIndex: 2,
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            onEdit?.();
+          } else if (buttonIndex === 2) {
+            onDelete?.();
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        '操作を選択',
+        '',
+        [
+          { text: '編集', onPress: () => onEdit?.() },
+          { text: '削除', style: 'destructive', onPress: () => onDelete?.() },
+          { text: 'キャンセル', style: 'cancel' },
+        ]
+      );
+    }
   };
 
   const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => (
@@ -262,12 +346,20 @@ export default function PostCard({
           <Text style={styles.placeholderText}>画像を読み込めません</Text>
         </View>
       ) : (
-        <Image
-          source={{ uri: item.mediaUrl }}
-          style={styles.mediaImage}
-          contentFit="cover"
-          onError={() => handleImageError(item.id)}
-        />
+        <>
+          {imageLoading.has(item.id) && (
+            <View style={styles.skeletonContainer}>
+              <SkeletonLoader width="100%" height={width} borderRadius={0} />
+            </View>
+          )}
+          <Image
+            source={{ uri: item.mediaUrl }}
+            style={[styles.mediaImage, imageLoading.has(item.id) && { opacity: 0 }]}
+            contentFit="cover"
+            onError={() => handleImageError(item.id)}
+            onLoad={() => handleImageLoad(item.id)}
+          />
+        </>
       )}
       {item.isVideo && !imageErrors.has(item.id) && (
         <View style={styles.videoPlayButton}>
@@ -324,9 +416,6 @@ export default function PostCard({
             </View>
             <View style={styles.profileInfo}>
               <Text style={styles.displayName}>{post.userProfile.display_name}</Text>
-              {post.menuName && (
-                <Text style={styles.locationText}>{post.menuName}</Text>
-              )}
             </View>
           </TouchableOpacity>
 
@@ -334,8 +423,9 @@ export default function PostCard({
             <TouchableOpacity
               style={styles.moreButton}
               activeOpacity={0.7}
+              onPress={handleMorePress}
             >
-              <Ionicons name="ellipsis-horizontal" size={20} color="#1a1a1a" />
+              <Ionicons name="ellipsis-horizontal" size={24} color="#1a1a1a" />
             </TouchableOpacity>
           )}
         </View>
@@ -373,7 +463,8 @@ export default function PostCard({
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                pagingEnabled
+                snapToInterval={width - 32}
+                decelerationRate="fast"
                 onScroll={handleScroll}
                 scrollEventThrottle={16}
                 style={styles.mediaList}
@@ -401,54 +492,35 @@ export default function PostCard({
         )}
       </View>
 
-      {/* Action Buttons */}
-      <View style={styles.actionBar}>
-        <View style={styles.actionLeft}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleLike} activeOpacity={0.7}>
-            <Animated.View style={{ transform: [{ scale: likeButtonScale }] }}>
-              <Ionicons
-                name={isLiked ? "heart" : "heart-outline"}
-                size={26}
-                color={isLiked ? "#FF3B30" : "#1a1a1a"}
-              />
-            </Animated.View>
-          </TouchableOpacity>
-          {showActions && canEdit() && (
-            <>
-              <TouchableOpacity style={styles.actionButton} onPress={onEdit} activeOpacity={0.7}>
-                <Ionicons name="create-outline" size={24} color="#1a1a1a" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionButton} onPress={onDelete} activeOpacity={0.7}>
-                <Ionicons name="trash-outline" size={24} color="#FF3B30" />
-              </TouchableOpacity>
-            </>
-          )}
+      {/* Post Info Card */}
+      <View style={styles.postInfoCard}>
+        {/* Categories */}
+        {post.description && (
+          <View style={styles.categoriesContainer}>
+            {post.description.split(',').map((category, index) => (
+              <View key={index} style={styles.categoryButton}>
+                <Text style={styles.categoryButtonText}>{category.trim()}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Title */}
+        {post.title && (
+          <Text style={styles.postTitle}>{post.title}</Text>
+        )}
+
+        {/* Menu Name */}
+        {post.menuName && (
+          <Text style={styles.menuName}>{post.menuName}</Text>
+        )}
+
+        {/* Timestamp */}
+        <View style={styles.timestampContainer}>
+          <Ionicons name="time-outline" size={13} color="#aaa" />
+          <Text style={styles.timestamp}>{getRelativeTime(post.createdAt)}</Text>
         </View>
       </View>
-
-      {/* Likes Count */}
-      {likesCount > 0 && (
-        <Text style={styles.likesCount}>いいね {likesCount.toLocaleString()}件</Text>
-      )}
-
-      {/* Caption */}
-      <View style={styles.captionContainer}>
-        {post.userProfile && (
-          <Text style={styles.caption}>
-            <Text style={styles.captionUsername}>{post.userProfile.display_name}</Text>
-            {'  '}
-            {post.title}
-          </Text>
-        )}
-        {post.description && (
-          <Text style={styles.captionMore} numberOfLines={2}>
-            {post.description}
-          </Text>
-        )}
-      </View>
-
-      {/* Timestamp */}
-      <Text style={styles.timestamp}>{getRelativeTime(post.createdAt)}</Text>
     </Animated.View>
   );
 }
@@ -456,8 +528,22 @@ export default function PostCard({
 const styles = StyleSheet.create({
   container: {
     backgroundColor: '#fff',
-    marginBottom: 12,
+    marginBottom: 16,
+    marginHorizontal: 0,
     borderRadius: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  skeletonContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1,
   },
   profileHeader: {
     flexDirection: 'row',
@@ -497,22 +583,22 @@ const styles = StyleSheet.create({
   },
   displayName: {
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#1a1a1a',
-  },
-  locationText: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 2,
+    letterSpacing: -0.3,
   },
   moreButton: {
-    padding: 8,
+    padding: 12,
+    marginRight: -4,
   },
   mediaContainer: {
-    width: width,
-    height: width,
+    width: width - 32,
+    height: width - 32,
     position: 'relative',
     backgroundColor: '#f5f5f5',
+    marginHorizontal: 16,
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   singleMediaWrapper: {
     width: '100%',
@@ -529,8 +615,8 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   mediaItem: {
-    width: width,
-    height: width,
+    width: width - 32,
+    height: width - 32,
     position: 'relative',
   },
   mediaImage: {
@@ -603,51 +689,58 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 8,
   },
-  actionBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  actionLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  actionButton: {
-    padding: 8,
-    marginRight: 4,
-  },
-  likesCount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
+  postInfoCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 16,
     paddingHorizontal: 16,
-    marginBottom: 6,
+    paddingVertical: 16,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
   },
-  captionContainer: {
-    paddingHorizontal: 16,
-    marginBottom: 6,
+  categoriesContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
   },
-  caption: {
-    fontSize: 14,
-    color: '#1a1a1a',
-    lineHeight: 20,
+  categoryButton: {
+    backgroundColor: '#F3E8FF',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
   },
-  captionUsername: {
+  categoryButtonText: {
+    fontSize: 13,
+    color: '#5B21B6',
     fontWeight: '600',
   },
-  captionMore: {
+  postTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1a1a1a',
+    marginBottom: 8,
+    letterSpacing: -0.3,
+    lineHeight: 22,
+  },
+  menuName: {
     fontSize: 14,
-    color: '#888',
+    color: '#777',
+    marginBottom: 12,
     lineHeight: 20,
-    marginTop: 4,
+  },
+  timestampContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   timestamp: {
     fontSize: 12,
     color: '#aaa',
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    marginTop: 4,
   },
 });

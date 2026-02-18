@@ -15,17 +15,22 @@ import {
   Animated,
   Image as RNImage,
   SafeAreaView,
+  Pressable,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import { authService, userService, postService, fileStorageService } from '@/lib/supabase';
 import AnimatedButton from '@/components/AnimatedButton';
+import { gradients, colors } from '@/lib/theme';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
-const itemSize = (width - 4) / numColumns;
+const GRID_GAP = 3;
+const itemSize = (width - (GRID_GAP * (numColumns + 1))) / numColumns;
 
 interface UserPost {
   id: string;
@@ -298,87 +303,154 @@ export default function ProfileScreen() {
     );
   };
 
-  const renderPostItem = ({ item }: { item: UserPost }) => (
-    <View style={styles.postItem}>
-      <TouchableOpacity
-        style={styles.postImageContainer}
-        onPress={() => Alert.alert('投稿詳細', `タイトル: ${item.title}\nメニュー: ${item.menuName}`)}
-        activeOpacity={0.9}
+  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+
+  const handlePostLongPress = (postId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectedPostId(selectedPostId === postId ? null : postId);
+  };
+
+  const renderPostItem = ({ item }: { item: UserPost }) => {
+    const isSelected = selectedPostId === item.id;
+
+    return (
+      <Pressable
+        style={styles.postItem}
+        onPress={() => {
+          if (isSelected) {
+            setSelectedPostId(null);
+          } else {
+            Alert.alert('投稿詳細', `タイトル: ${item.title}\nメニュー: ${item.menuName}`);
+          }
+        }}
+        onLongPress={() => handlePostLongPress(item.id)}
+        delayLongPress={300}
       >
-        <Image
-          source={{ uri: item.mediaUri }}
-          style={styles.postImage}
-          contentFit="cover"
-        />
-        {item.isVideo && (
-          <View style={styles.videoIndicator}>
-            <Ionicons name="play" size={14} color="white" />
+        <View style={styles.postImageWrapper}>
+          <Image
+            source={{ uri: item.mediaUri }}
+            style={styles.postImage}
+            contentFit="cover"
+          />
+          {item.isVideo && (
+            <View style={styles.videoIndicator}>
+              <Ionicons name="play" size={14} color="white" />
+            </View>
+          )}
+          {/* 長押し時に表示されるオーバーレイ */}
+          {isSelected && (
+            <Animated.View style={styles.postOverlay}>
+              <View style={styles.postOverlayButtons}>
+                <TouchableOpacity
+                  style={styles.overlayEditButton}
+                  onPress={() => {
+                    setSelectedPostId(null);
+                    handleEditPost(item.id);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="create-outline" size={22} color="white" />
+                  <Text style={styles.overlayButtonText}>編集</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.overlayDeleteButton}
+                  onPress={() => {
+                    setSelectedPostId(null);
+                    handleDeletePost(item);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="trash-outline" size={22} color="white" />
+                  <Text style={styles.overlayButtonText}>削除</Text>
+                </TouchableOpacity>
+              </View>
+            </Animated.View>
+          )}
+        </View>
+        {/* いいね数表示 */}
+        {item.likesCount > 0 && (
+          <View style={styles.postLikeBadge}>
+            <Ionicons name="heart" size={10} color="white" />
+            <Text style={styles.postLikeCount}>{item.likesCount}</Text>
           </View>
         )}
-      </TouchableOpacity>
-      <View style={styles.postActionButtons}>
-        <TouchableOpacity
-          style={styles.editPostButton}
-          onPress={() => handleEditPost(item.id)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="create-outline" size={16} color="white" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.deletePostButton}
-          onPress={() => handleDeletePost(item)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="trash-outline" size={16} color="white" />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+      </Pressable>
+    );
+  };
 
   const renderHeader = () => {
     if (!userProfile) return null;
 
     return (
       <View style={styles.header}>
-        <View style={styles.avatarSection}>
-          <View style={styles.avatarWrapper}>
-            <Image
-              source={{ uri: userProfile.avatar }}
-              style={styles.avatar}
-              contentFit="cover"
-            />
+        {/* グラデーションヘッダー背景 */}
+        <LinearGradient
+          colors={['#667eea', '#764ba2']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.headerGradient}
+        >
+          <View style={styles.headerPattern} />
+        </LinearGradient>
+
+        <View style={styles.profileContent}>
+          <View style={styles.avatarSection}>
+            {/* グラデーションリング */}
+            <LinearGradient
+              colors={['#667eea', '#764ba2', '#f093fb']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.avatarGradientRing}
+            >
+              <View style={styles.avatarWrapper}>
+                <Image
+                  source={{ uri: userProfile.avatar }}
+                  style={styles.avatar}
+                  contentFit="cover"
+                />
+              </View>
+            </LinearGradient>
           </View>
-        </View>
 
-        <Text style={styles.displayName}>
-          {userProfile.displayName || userProfile.username || 'ユーザー'}
-        </Text>
-        <Text style={styles.username}>@{userProfile.username}</Text>
+          <Text style={styles.displayName}>
+            {userProfile.displayName || userProfile.username || 'ユーザー'}
+          </Text>
+          <Text style={styles.username}>@{userProfile.username}</Text>
 
-        <View style={styles.statsContainer}>
-          <View style={styles.statItem}>
-            <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
-            <Text style={styles.statLabel}>投稿</Text>
+          <View style={styles.statsContainer}>
+            <View style={styles.statItem}>
+              <Text style={styles.statNumber}>{userProfile.postsCount}</Text>
+              <Text style={styles.statLabel}>投稿</Text>
+            </View>
           </View>
-        </View>
 
-        <View style={styles.buttonContainer}>
-          <AnimatedButton
-            style={styles.editButton}
-            onPress={handleEditProfile}
-            accessibilityLabel="プロフィールを編集"
-          >
-            <Ionicons name="create-outline" size={18} color="#1a1a1a" />
-            <Text style={styles.editButtonText}>プロフィールを編集</Text>
-          </AnimatedButton>
+          <View style={styles.buttonContainer}>
+            {/* モダンな編集ボタン */}
+            <TouchableOpacity
+              style={styles.editButton}
+              onPress={handleEditProfile}
+              activeOpacity={0.85}
+              accessibilityLabel="プロフィールを編集"
+            >
+              <LinearGradient
+                colors={['#667eea', '#764ba2']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.editButtonGradient}
+              >
+                <Ionicons name="create-outline" size={18} color="white" />
+                <Text style={styles.editButtonText}>プロフィールを編集</Text>
+              </LinearGradient>
+            </TouchableOpacity>
 
-          <AnimatedButton
-            style={styles.logoutButton}
-            onPress={handleLogout}
-            accessibilityLabel="ログアウト"
-          >
-            <Ionicons name="log-out-outline" size={18} color="#FF3B30" />
-          </AnimatedButton>
+            <AnimatedButton
+              style={styles.logoutButton}
+              onPress={handleLogout}
+              accessibilityLabel="ログアウト"
+            >
+              <Ionicons name="log-out-outline" size={18} color="#FF3B30" />
+            </AnimatedButton>
+          </View>
         </View>
 
         <View style={styles.postsHeader}>
@@ -571,29 +643,53 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   header: {
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+  },
+  headerGradient: {
+    height: 100,
+    width: '100%',
+    position: 'relative',
+  },
+  headerPattern: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0.1,
+  },
+  profileContent: {
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    backgroundColor: '#fff',
+    paddingBottom: 12,
+    marginTop: -50,
   },
   avatarSection: {
     marginBottom: 16,
   },
-  avatarWrapper: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#fff',
-    shadowColor: '#000',
+  avatarGradientRing: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    padding: 4,
+    shadowColor: '#667eea',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.3,
     shadowRadius: 12,
-    elevation: 4,
+    elevation: 8,
+  },
+  avatarWrapper: {
+    width: 102,
+    height: 102,
+    borderRadius: 51,
+    backgroundColor: '#fff',
+    padding: 3,
   },
   avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     backgroundColor: '#f5f5f5',
   },
   displayName: {
@@ -633,19 +729,26 @@ const styles = StyleSheet.create({
   },
   editButton: {
     flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#667eea',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  editButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
-    borderRadius: 12,
     gap: 8,
   },
   editButtonText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: 'white',
   },
   logoutButton: {
     width: 48,
@@ -663,6 +766,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 24,
     paddingTop: 20,
+    paddingHorizontal: 20,
     borderTopWidth: 1,
     borderTopColor: '#f0f0f0',
     width: '100%',
@@ -809,45 +913,81 @@ const styles = StyleSheet.create({
   },
   row: {
     justifyContent: 'flex-start',
+    paddingHorizontal: GRID_GAP,
+    gap: GRID_GAP,
   },
   postItem: {
     width: itemSize,
     height: itemSize,
-    margin: 1,
+    marginBottom: GRID_GAP,
     position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  postImageContainer: {
+  postImageWrapper: {
     width: '100%',
     height: '100%',
     position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   postImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#f5f5f5',
   },
-  postActionButtons: {
+  postOverlay: {
     position: 'absolute',
-    top: 6,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  postOverlayButtons: {
+    flexDirection: 'row',
+    gap: 20,
+  },
+  overlayEditButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+  },
+  overlayDeleteButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+  },
+  overlayButtonText: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  postLikeBadge: {
+    position: 'absolute',
+    bottom: 6,
     left: 6,
     flexDirection: 'row',
-    gap: 6,
-  },
-  editPostButton: {
+    alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 14,
-    width: 28,
-    height: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    gap: 3,
   },
-  deletePostButton: {
-    backgroundColor: 'rgba(255, 59, 48, 0.9)',
-    borderRadius: 14,
-    width: 28,
-    height: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
+  postLikeCount: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '600',
   },
   videoIndicator: {
     position: 'absolute',
@@ -855,8 +995,8 @@ const styles = StyleSheet.create({
     right: 6,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
     borderRadius: 10,
-    width: 20,
-    height: 20,
+    width: 22,
+    height: 22,
     justifyContent: 'center',
     alignItems: 'center',
   },
