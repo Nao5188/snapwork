@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated, ViewStyle, StyleProp } from 'react-native';
-import { colors, borderRadius } from '@/lib/theme';
+import { borderRadius } from '@/lib/theme';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 interface SkeletonLoaderProps {
   width?: number | string;
@@ -15,6 +16,7 @@ export default function SkeletonLoader({
   borderRadius: radius = borderRadius.md,
   style,
 }: SkeletonLoaderProps) {
+  const { colors } = useAppTheme();
   const shimmerAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -34,6 +36,7 @@ export default function SkeletonLoader({
     );
     animation.start();
     return () => animation.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const opacity = shimmerAnim.interpolate({
@@ -45,12 +48,8 @@ export default function SkeletonLoader({
     <Animated.View
       style={[
         styles.skeleton,
-        {
-          width,
-          height,
-          borderRadius: radius,
-          opacity,
-        },
+        { width: width as any, height, borderRadius: radius, backgroundColor: colors.border },
+        { opacity },
         style,
       ]}
     />
@@ -59,8 +58,9 @@ export default function SkeletonLoader({
 
 // 投稿カード用スケルトン
 export function PostCardSkeleton() {
+  const { colors } = useAppTheme();
   return (
-    <View style={styles.postCardSkeleton}>
+    <View style={[styles.postCardSkeleton, { backgroundColor: colors.surface }]}>
       {/* Profile header */}
       <View style={styles.profileHeader}>
         <SkeletonLoader width={40} height={40} borderRadius={20} />
@@ -96,8 +96,9 @@ export function PostCardSkeleton() {
 
 // プロフィール用スケルトン
 export function ProfileSkeleton() {
+  const { colors } = useAppTheme();
   return (
-    <View style={styles.profileSkeleton}>
+    <View style={[styles.profileSkeleton, { backgroundColor: colors.surface }]}>
       <SkeletonLoader width={100} height={100} borderRadius={50} />
       <SkeletonLoader width={150} height={20} style={{ marginTop: 16 }} />
       <SkeletonLoader width={100} height={14} style={{ marginTop: 8 }} />
@@ -111,11 +112,8 @@ export function ProfileSkeleton() {
 }
 
 const styles = StyleSheet.create({
-  skeleton: {
-    backgroundColor: colors.border,
-  },
+  skeleton: {},
   postCardSkeleton: {
-    backgroundColor: colors.cardBackground,
     marginBottom: 12,
     padding: 16,
   },
@@ -135,7 +133,7 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   profileSkeleton: {
-    alignItems: 'center',
+    alignItems: 'center' as const,
     padding: 24,
   },
   statsRow: {

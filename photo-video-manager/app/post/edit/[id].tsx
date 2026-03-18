@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  ScrollView,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -19,7 +18,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { postService, authService } from '@/lib/supabase';
+import { postService, authService, fileStorageService } from '@/lib/supabase';
+import Button, { IconButton, TagButton } from '@/components/Button';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
@@ -34,10 +35,10 @@ interface MediaItem {
 export default function EditPostScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const { colors } = useAppTheme();
 
   const [formData, setFormData] = useState({
     title: '',
-    menuName: '',
   });
 
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
@@ -55,6 +56,7 @@ export default function EditPostScreen() {
   useEffect(() => {
     loadCustomCategories();
     checkAuthAndLoadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const loadCustomCategories = async () => {
@@ -145,7 +147,8 @@ export default function EditPostScreen() {
         return;
       }
       setCurrentUserId(data.user.id);
-      await loadPostData();
+      // userId を直接渡して state 非同期更新の影響を回避
+      await loadPostData(data.user.id);
 
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -159,7 +162,7 @@ export default function EditPostScreen() {
     }
   };
 
-  const loadPostData = async () => {
+  const loadPostData = async (userId?: string) => {
     try {
       const postWithMedia = await postService.getPostWithMedia(id as string);
 
@@ -173,7 +176,8 @@ export default function EditPostScreen() {
         return;
       }
 
-      if (currentUserId && postWithMedia.user_id !== currentUserId) {
+      const ownerId = userId ?? currentUserId;
+      if (ownerId && postWithMedia.user_id !== ownerId) {
         Alert.alert(
           '権限がありません',
           'この投稿を編集する権限がありません。',
@@ -192,7 +196,7 @@ export default function EditPostScreen() {
         menuName = parts[0];
         const categoryPart = parts[1]?.split('|')[0];
         if (categoryPart) {
-          categories = categoryPart.split(',').filter(c => c.trim());
+          categories = categoryPart.split(',').filter((c: string) => c.trim());
         }
       }
 
@@ -203,7 +207,6 @@ export default function EditPostScreen() {
 
       setFormData({
         title: postWithMedia.title === '無題' ? '' : postWithMedia.title,
-        menuName: menuName,
       });
       setSelectedCategories(categories);
 
@@ -257,10 +260,10 @@ export default function EditPostScreen() {
   const selectMediaFromLibrary = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        mediaTypes: ['images', 'videos'],
         allowsMultipleSelection: true,
-        selectionLimit: 5 - mediaItems.length,
-        quality: 0.8,
+        selectionLimit: Math.max(1, 5 - mediaItems.length),
+        quality: 1.0,
       });
 
       if (!result.canceled && result.assets) {
@@ -282,8 +285,8 @@ export default function EditPostScreen() {
   const takePhoto = async () => {
     try {
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        quality: 0.8,
+        mediaTypes: ['images', 'videos'],
+        quality: 1.0,
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
@@ -320,23 +323,44 @@ export default function EditPostScreen() {
 
     setLoading(true);
     try {
-      // メニュー名にカテゴリ情報を含める
-      let menuNameWithCategories = formData.menuName;
+      const { data: { user } } = await authService.getCurrentUser();
+      if (!user) {
+        Alert.alert('エラー', 'ログインが必要です。');
+        router.replace('/login');
+        return;
+      }
+
+      // ローカルファイル（file://）のみ Supabase Storage にアップロード
+      const uploadedMediaItems = await Promise.all(
+        mediaItems.map(async (item) => {
+          if (item.uri.startsWith('file://') || item.uri.startsWith('content://')) {
+            try {
+              const uploadedUrl = await fileStorageService.uploadPostImage(user.id, item.uri, id as string);
+              return { ...item, uri: uploadedUrl };
+            } catch (uploadError) {
+              console.warn('Failed to upload media, using original URI:', uploadError);
+              return item;
+            }
+          }
+          return item;
+        })
+      );
+
+      // カテゴリ情報を含める
+      let menuNameWithCategories = '';
       if (selectedCategories.length > 0) {
         const categoryStr = selectedCategories.join(',');
-        menuNameWithCategories = menuNameWithCategories
-          ? `${menuNameWithCategories}|CATEGORIES:${categoryStr}`
-          : `|CATEGORIES:${categoryStr}`;
+        menuNameWithCategories = `|CATEGORIES:${categoryStr}`;
       }
 
       await postService.updatePost(id as string, {
         title: formData.title || '無題',
         menu_name: menuNameWithCategories,
-        media_url: mediaItems.length > 0 ? mediaItems[0].uri : '',
-        is_video: mediaItems.length > 0 ? mediaItems[0].type === 'video' : false,
+        media_url: uploadedMediaItems.length > 0 ? uploadedMediaItems[0].uri : '',
+        is_video: uploadedMediaItems.length > 0 ? uploadedMediaItems[0].type === 'video' : false,
       });
 
-      const postMediaItems = mediaItems.map((item, index) => ({
+      const postMediaItems = uploadedMediaItems.map((item, index) => ({
         media_url: item.uri,
         is_video: item.type === 'video',
         display_order: index,
@@ -411,39 +435,41 @@ export default function EditPostScreen() {
 
   if (initialLoading) {
     return (
-      <View style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingIcon}>
-            <Ionicons name="document-outline" size={32} color="#bbb" />
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.loadingIcon, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="document-outline" size={32} color={colors.textMuted} />
           </View>
-          <Text style={styles.loadingText}>読み込み中...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>読み込み中...</Text>
         </View>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <KeyboardAvoidingView
-        style={styles.container}
+        style={[styles.container, { backgroundColor: colors.background }]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.7}>
-            <Ionicons name="chevron-back" size={24} color="#1a1a1a" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>投稿を編集</Text>
-          <TouchableOpacity
-            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+        <View style={[styles.header, { backgroundColor: colors.headerBg, borderBottomColor: colors.border }]}>
+          <IconButton
+            icon="chevron-back"
+            variant="ghost"
+            size="medium"
+            onPress={() => router.back()}
+            accessibilityLabel="戻る"
+          />
+          <Text style={[styles.headerTitle, { color: colors.text }]}>投稿を編集</Text>
+          <Button
+            title={loading ? '更新中...' : '更新'}
+            variant="primary"
+            size="small"
             onPress={handleSubmit}
+            loading={loading}
             disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.submitButtonText}>
-              {loading ? '更新中...' : '更新'}
-            </Text>
-          </TouchableOpacity>
+          />
         </View>
 
         <Animated.ScrollView
@@ -451,8 +477,8 @@ export default function EditPostScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* Media Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>メディア ({mediaItems.length}/5)</Text>
+          <View style={[styles.section, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>メディア ({mediaItems.length}/5)</Text>
 
             <FlatList
               data={mediaItems}
@@ -464,14 +490,26 @@ export default function EditPostScreen() {
               ListFooterComponent={
                 mediaItems.length < 5 ? (
                   <View style={styles.mediaActions}>
-                    <TouchableOpacity style={styles.mediaActionButton} onPress={takePhoto} activeOpacity={0.7}>
-                      <Ionicons name="camera-outline" size={24} color="#1a1a1a" />
-                      <Text style={styles.mediaActionText}>撮影</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.mediaActionButton} onPress={selectMediaFromLibrary} activeOpacity={0.7}>
-                      <Ionicons name="images-outline" size={24} color="#1a1a1a" />
-                      <Text style={styles.mediaActionText}>選択</Text>
-                    </TouchableOpacity>
+                    <View style={styles.mediaActionButton}>
+                      <Button
+                        icon="camera-outline"
+                        title="撮影"
+                        variant="outline"
+                        size="small"
+                        onPress={takePhoto}
+                        style={styles.mediaActionButtonInner}
+                      />
+                    </View>
+                    <View style={styles.mediaActionButton}>
+                      <Button
+                        icon="images-outline"
+                        title="選択"
+                        variant="outline"
+                        size="small"
+                        onPress={selectMediaFromLibrary}
+                        style={styles.mediaActionButtonInner}
+                      />
+                    </View>
                   </View>
                 ) : null
               }
@@ -479,22 +517,23 @@ export default function EditPostScreen() {
           </View>
 
           {/* Post Form */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>投稿内容</Text>
+          <View style={[styles.section, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>投稿内容</Text>
 
             {/* Title */}
             <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>タイトル</Text>
+              <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>タイトル</Text>
               <View style={[
                 styles.inputContainer,
-                focusedField === 'title' && styles.inputContainerFocused,
+                { backgroundColor: colors.surface2 },
+                focusedField === 'title' && { backgroundColor: colors.surface, borderColor: colors.primary },
               ]}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, { color: colors.text }]}
                   value={formData.title}
                   onChangeText={(text) => handleInputChange('title', text)}
                   placeholder="投稿のタイトルを入力（任意）"
-                  placeholderTextColor="#bbb"
+                  placeholderTextColor={colors.textMuted}
                   maxLength={100}
                   onFocus={() => setFocusedField('title')}
                   onBlur={() => setFocusedField(null)}
@@ -502,65 +541,41 @@ export default function EditPostScreen() {
               </View>
             </View>
 
-            {/* Menu Name */}
+            {/* Category Buttons */}
             <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>メニュー名</Text>
-              <View style={[
-                styles.inputContainer,
-                focusedField === 'menuName' && styles.inputContainerFocused,
-              ]}>
-                <TextInput
-                  style={styles.input}
-                  value={formData.menuName}
-                  onChangeText={(text) => handleInputChange('menuName', text)}
-                  placeholder="メニュー名を入力（任意）"
-                  placeholderTextColor="#bbb"
-                  maxLength={50}
-                  onFocus={() => setFocusedField('menuName')}
-                  onBlur={() => setFocusedField(null)}
-                />
-              </View>
-
-              {/* Category Buttons */}
+              <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>カテゴリ</Text>
               <View style={styles.categoryContainer}>
                 {[...DEFAULT_MENU_CATEGORIES, ...customCategories].map((category) => (
-                  <TouchableOpacity
+                  <TagButton
                     key={category}
-                    style={[
-                      styles.categoryButton,
-                      selectedCategories.includes(category) && styles.categoryButtonSelected,
-                      customCategories.includes(category) && styles.customCategoryButton,
-                    ]}
+                    title={category}
+                    selected={selectedCategories.includes(category)}
                     onPress={() => toggleCategory(category)}
                     onLongPress={() => handleDeleteCategory(category)}
-                    delayLongPress={500}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[
-                      styles.categoryButtonText,
-                      selectedCategories.includes(category) && styles.categoryButtonTextSelected,
-                    ]}>
-                      {category}
-                    </Text>
-                  </TouchableOpacity>
+                    style={customCategories.includes(category) ? styles.customCategoryButton : undefined}
+                  />
                 ))}
-                <TouchableOpacity
-                  style={styles.addCategoryButton}
+                <IconButton
+                  icon="add"
+                  variant="outline"
+                  size="small"
                   onPress={() => setShowAddCategoryModal(true)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="add" size={18} color="#1a1a1a" />
-                </TouchableOpacity>
+                  style={styles.addCategoryButton}
+                />
               </View>
             </View>
           </View>
 
           {/* Delete Button */}
-          <View style={styles.section}>
-            <TouchableOpacity style={styles.deleteButton} onPress={handleDelete} activeOpacity={0.8}>
-              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
-              <Text style={styles.deleteButtonText}>この投稿を削除</Text>
-            </TouchableOpacity>
+          <View style={[styles.section, { backgroundColor: colors.surface }]}>
+            <Button
+              icon="trash-outline"
+              title="この投稿を削除"
+              variant="danger"
+              size="medium"
+              onPress={handleDelete}
+              fullWidth
+            />
           </View>
         </Animated.ScrollView>
 
@@ -572,18 +587,19 @@ export default function EditPostScreen() {
           onRequestClose={() => setShowAddCategoryModal(false)}
         >
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>新しいカテゴリを追加</Text>
+            <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>新しいカテゴリを追加</Text>
               <View style={[
                 styles.inputContainer,
-                focusedField === 'newCategory' && styles.inputContainerFocused,
+                { backgroundColor: colors.surface2 },
+                focusedField === 'newCategory' && { backgroundColor: colors.surface, borderColor: colors.primary },
               ]}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, { color: colors.text }]}
                   value={newCategoryName}
                   onChangeText={setNewCategoryName}
                   placeholder="カテゴリ名を入力"
-                  placeholderTextColor="#bbb"
+                  placeholderTextColor={colors.textMuted}
                   maxLength={20}
                   onFocus={() => setFocusedField('newCategory')}
                   onBlur={() => setFocusedField(null)}
@@ -591,23 +607,23 @@ export default function EditPostScreen() {
                 />
               </View>
               <View style={styles.modalButtons}>
-                <TouchableOpacity
-                  style={styles.modalCancelButton}
+                <Button
+                  title="キャンセル"
+                  variant="secondary"
+                  size="medium"
                   onPress={() => {
                     setNewCategoryName('');
                     setShowAddCategoryModal(false);
                   }}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.modalCancelButtonText}>キャンセル</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.modalSubmitButton}
+                  style={styles.modalButton}
+                />
+                <Button
+                  title="追加"
+                  variant="primary"
+                  size="medium"
                   onPress={handleAddCategory}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.modalSubmitButtonText}>追加</Text>
-                </TouchableOpacity>
+                  style={styles.modalButton}
+                />
               </View>
             </View>
           </View>
@@ -626,24 +642,25 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#fafafa',
   },
   loadingIcon: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#fff',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 4,
   },
   loadingText: {
     fontSize: 15,
-    color: '#888',
+    color: '#666666',
   },
   header: {
     flexDirection: 'row',
@@ -652,54 +669,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     paddingTop: Platform.OS === 'ios' ? 60 : (StatusBar.currentHeight || 0) + 12,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  backButton: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'flex-start',
+    borderBottomColor: '#e5e5e5',
   },
   headerTitle: {
     fontSize: 17,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  submitButton: {
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  submitButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: '#444444',
   },
   content: {
     flex: 1,
     paddingHorizontal: 16,
   },
   section: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
     padding: 20,
     marginVertical: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 8,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 3,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#444444',
     marginBottom: 16,
   },
   mediaList: {
@@ -749,19 +746,18 @@ const styles = StyleSheet.create({
   mediaActionButton: {
     width: 88,
     height: 88,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
-    borderStyle: 'dashed',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  mediaActionText: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 6,
-    fontWeight: '500',
+  mediaActionButtonInner: {
+    width: '100%',
+    height: '100%',
+    flexDirection: 'column',
+    borderWidth: 1.5,
+    borderColor: '#e5e5e5',
+    borderStyle: 'dashed',
+    borderRadius: 14,
+    backgroundColor: '#fafafa',
   },
   inputWrapper: {
     marginBottom: 20,
@@ -769,81 +765,36 @@ const styles = StyleSheet.create({
   inputLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#555',
+    color: '#666666',
     marginBottom: 8,
     marginLeft: 4,
   },
   inputContainer: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
     borderRadius: 12,
     borderWidth: 1.5,
     borderColor: 'transparent',
   },
   inputContainerFocused: {
     backgroundColor: '#fff',
-    borderColor: '#1a1a1a',
+    borderColor: '#444444',
   },
   input: {
     paddingVertical: 14,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: '#1a1a1a',
+    color: '#444444',
   },
   categoryContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginTop: 12,
-  },
-  categoryButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#f5f5f5',
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
-  },
-  categoryButtonSelected: {
-    backgroundColor: '#1a1a1a',
-    borderColor: '#1a1a1a',
-  },
-  categoryButtonText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#555',
-  },
-  categoryButtonTextSelected: {
-    color: '#fff',
   },
   customCategoryButton: {
     borderStyle: 'dashed',
   },
   addCategoryButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#f5f5f5',
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
     borderStyle: 'dashed',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  deleteButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#FFF5F5',
-    borderWidth: 1,
-    borderColor: '#FFE5E5',
-    gap: 8,
-  },
-  deleteButtonText: {
-    color: '#FF3B30',
-    fontSize: 15,
-    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,
@@ -861,7 +812,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: '#444444',
     marginBottom: 20,
     textAlign: 'center',
   },
@@ -870,28 +821,7 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 20,
   },
-  modalCancelButton: {
+  modalButton: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-  },
-  modalCancelButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#555',
-  },
-  modalSubmitButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#1a1a1a',
-    alignItems: 'center',
-  },
-  modalSubmitButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
   },
 });

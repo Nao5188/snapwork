@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import {
+  View,
   StyleSheet,
   Text,
   Animated,
@@ -10,32 +11,33 @@ import {
   AccessibilityInfo,
   ActivityIndicator,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { colors, gradients, borderRadius, shadows, typography } from '@/lib/theme';
+import { colors, borderRadius, shadows, typography } from '@/lib/theme';
 import { lightTap } from '@/lib/haptics';
 
 interface GradientButtonProps {
   title: string;
   onPress: () => void;
-  gradient?: string[];
+  gradient?: readonly [string, string, ...string[]];
   disabled?: boolean;
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
   textStyle?: StyleProp<TextStyle>;
   accessibilityLabel?: string;
   accessibilityHint?: string;
+  testID?: string;
 }
 
 export default function GradientButton({
   title,
   onPress,
-  gradient = gradients.primary,
+  gradient,
   disabled = false,
   loading = false,
   style,
   textStyle,
   accessibilityLabel,
   accessibilityHint,
+  testID,
 }: GradientButtonProps) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -80,6 +82,7 @@ export default function GradientButton({
       accessibilityHint={accessibilityHint}
       accessibilityRole="button"
       accessibilityState={{ disabled: disabled || loading }}
+      testID={testID}
     >
       <Animated.View
         style={[
@@ -87,18 +90,13 @@ export default function GradientButton({
           (disabled || loading) && styles.disabled,
         ]}
       >
-        <LinearGradient
-          colors={disabled ? [colors.textMuted, colors.textMuted] : gradient}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={[styles.button, shadows.medium, style]}
-        >
+        <View style={[styles.button, shadows.medium, style]}>
           {loading ? (
             <ActivityIndicator color={colors.textLight} size="small" />
           ) : (
             <Text style={[styles.buttonText, textStyle]}>{title}</Text>
           )}
-        </LinearGradient>
+        </View>
       </Animated.View>
     </Pressable>
   );
@@ -112,6 +110,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 54,
+    backgroundColor: '#2196F3',
   },
   buttonText: {
     ...typography.headline,

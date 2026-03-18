@@ -3,6 +3,7 @@ import {
   View,
   StyleSheet,
   Text,
+  Image,
   TouchableOpacity,
   Alert,
   KeyboardAvoidingView,
@@ -13,30 +14,34 @@ import {
   AccessibilityInfo,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Linking from 'expo-linking';
 import { authService, userService } from '../lib/supabase';
 import { storageService } from '../lib/storage';
-import { colors, gradients, borderRadius, shadows, typography } from '../lib/theme';
+import { gradients, borderRadius, typography } from '../lib/theme';
 import { lightTap, successFeedback, errorFeedback } from '../lib/haptics';
 import FloatingLabelInput from '../components/FloatingLabelInput';
 import GradientButton from '../components/GradientButton';
 import AnimatedButton from '../components/AnimatedButton';
+import { useAppTheme } from '@/lib/ThemeContext';
 
-const { width, height } = Dimensions.get('window');
+const { height } = Dimensions.get('window');
 
 export default function LoginScreen() {
+  const { colors, isDark } = useAppTheme();
   const [isSignUp, setIsSignUp] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
     confirmPassword: '',
     displayName: '',
-    username: '',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [reduceMotion, setReduceMotion] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
 
   // アニメーション
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -73,6 +78,7 @@ export default function LoginScreen() {
         useNativeDriver: true,
       }),
     ]).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduceMotion]);
 
   useEffect(() => {
@@ -108,20 +114,11 @@ export default function LoginScreen() {
   };
 
   const validatePassword = (password: string): { isValid: boolean; message: string } => {
-    if (password.length < 8) {
-      return { isValid: false, message: 'パスワードは8文字以上で入力してください。' };
-    }
-    if (!/[a-z]/.test(password)) {
-      return { isValid: false, message: 'パスワードには小文字を含めてください。' };
-    }
-    if (!/[A-Z]/.test(password)) {
-      return { isValid: false, message: 'パスワードには大文字を含めてください。' };
+    if (password.length < 6) {
+      return { isValid: false, message: 'パスワードは6文字以上で入力してください。' };
     }
     if (!/[0-9]/.test(password)) {
       return { isValid: false, message: 'パスワードには数字を含めてください。' };
-    }
-    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
-      return { isValid: false, message: 'パスワードには特殊文字（!@#$%^&*等）を含めてください。' };
     }
     return { isValid: true, message: '' };
   };
@@ -148,11 +145,6 @@ export default function LoginScreen() {
       if (!formData.displayName) {
         newErrors.displayName = '表示名を入力してください';
       }
-      if (!formData.username) {
-        newErrors.username = 'ユーザー名を入力してください';
-      } else if (formData.username.length < 3) {
-        newErrors.username = 'ユーザー名は3文字以上で入力してください';
-      }
       if (formData.password !== formData.confirmPassword) {
         newErrors.confirmPassword = 'パスワードが一致しません';
       }
@@ -167,6 +159,48 @@ export default function LoginScreen() {
     return true;
   };
 
+  const handleForgotPassword = async () => {
+    if (!resetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resetEmail)) {
+      setErrors({ resetEmail: '正しいメールアドレスを入力してください' });
+      errorFeedback();
+      return;
+    }
+
+    setLoading(true);
+    lightTap();
+    try {
+      const redirectTo = Linking.createURL('reset-password');
+      console.log('=== redirectTo URL ===', redirectTo);
+      await authService.resetPassword(resetEmail, redirectTo);
+      successFeedback();
+      Alert.alert(
+        'メールを送信しました',
+        `${resetEmail} にパスワードリセット用のメールを送信しました。メール内のリンクからパスワードを再設定してください。`,
+        [{
+          text: 'OK',
+          onPress: () => {
+            setIsForgotPassword(false);
+            setResetEmail('');
+            setErrors({});
+          }
+        }]
+      );
+    } catch {
+      errorFeedback();
+      Alert.alert('エラー', 'メールの送信に失敗しました。もう一度お試しください。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateUsername = (displayName: string): string => {
+    const base = displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (base.length >= 3) {
+      return base.substring(0, 42);
+    }
+    return 'user_' + Math.random().toString(36).substring(2, 10);
+  };
+
   const handleSubmit = async () => {
     if (!validateForm()) return;
 
@@ -175,14 +209,7 @@ export default function LoginScreen() {
 
     try {
       if (isSignUp) {
-        const isUsernameAvailable = await userService.checkUsernameAvailability(formData.username);
-        if (!isUsernameAvailable) {
-          setErrors({ username: 'このユーザー名は既に使用されています' });
-          errorFeedback();
-          setLoading(false);
-          return;
-        }
-
+        console.log('[Step 1] checkDisplayNameAvailability...');
         const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(formData.displayName);
         if (!isDisplayNameAvailable) {
           setErrors({ displayName: 'この表示名は既に使用されています' });
@@ -191,19 +218,31 @@ export default function LoginScreen() {
           return;
         }
 
+        console.log('[Step 2] generateUsername & checkUsernameAvailability...');
+        let username = generateUsername(formData.displayName);
+        // 重複時は最大5回リトライ
+        for (let i = 0; i < 5; i++) {
+          const isAvailable = await userService.checkUsernameAvailability(username);
+          if (isAvailable) break;
+          username = 'user_' + Math.random().toString(36).substring(2, 10);
+        }
+
+        console.log('[Step 3] authService.signUp...');
+        const emailRedirectTo = Linking.createURL('login');
         await authService.signUp(
           formData.email,
           formData.password,
           {
-            username: formData.username,
+            username,
             display_name: formData.displayName,
-          }
+          },
+          emailRedirectTo
         );
 
         successFeedback();
         Alert.alert(
           'アカウント作成完了',
-          'メールアドレス宛に確認メールを送信しました。メールに記載されているリンクをクリックして認証を完了してから、ログインしてください。',
+          'メールアドレス宛に確認メールを送信しました。メール内のリンクをタップするとアプリが開き、自動的にログインされます。',
           [{
             text: 'OK',
             onPress: () => {
@@ -213,7 +252,6 @@ export default function LoginScreen() {
                 password: '',
                 confirmPassword: '',
                 displayName: '',
-                username: '',
               });
               setErrors({});
             }
@@ -226,16 +264,22 @@ export default function LoginScreen() {
       }
     } catch (error: any) {
       errorFeedback();
+      console.error('Auth error:', error.message, '| code:', error.code, '| status:', error.status);
       let errorMessage = '認証に失敗しました。もう一度お試しください。';
 
       if (error.message?.includes('Invalid login credentials')) {
         errorMessage = 'メールアドレスまたはパスワードが正しくありません。';
       } else if (error.message?.includes('User already registered')) {
-        errorMessage = 'このメールアドレスはすでに登録されています。';
+        errorMessage = 'このメールアドレスはすでに登録されています。\nメール確認が完了していない場合は、届いたメールのリンクをタップしてください。';
       } else if (error.message?.includes('Email not confirmed')) {
         errorMessage = 'メール認証が完了していません。送信されたメールからアカウントを有効化してください。';
-      } else if (error.message?.includes('rate limit')) {
-        errorMessage = 'リクエストが多すぎます。しばらく待ってから再試行してください。';
+      } else if (
+        error.message?.includes('rate limit') ||
+        error.code === 'over_request_rate_limit' ||
+        error.code === 'over_email_send_rate_limit' ||
+        error.message?.includes('security purposes')
+      ) {
+        errorMessage = 'リクエストが多すぎます。約1時間後に再試行してください。';
       }
 
       Alert.alert('エラー', errorMessage);
@@ -264,7 +308,6 @@ export default function LoginScreen() {
                 password: '',
                 confirmPassword: '',
                 displayName: '',
-                username: '',
               });
               setErrors({});
               setRememberMe(false);
@@ -280,7 +323,6 @@ export default function LoginScreen() {
         password: '',
         confirmPassword: '',
         displayName: '',
-        username: '',
       });
       setErrors({});
       setRememberMe(false);
@@ -288,10 +330,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      {/* ミニマル装飾 */}
-      <View style={styles.decorCircle1} />
-      <View style={styles.decorCircle2} />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
 
       <KeyboardAvoidingView
         style={styles.keyboardView}
@@ -314,17 +353,64 @@ export default function LoginScreen() {
             {/* Header */}
             <View style={styles.header}>
               <Animated.View style={[styles.appNameContainer, { transform: [{ scale: logoScale }] }]}>
-                <Text style={styles.appNameSnap}>Snap</Text>
-                <Text style={styles.appNameWork}>Work</Text>
+                <Image
+                  source={require('../assets/images/SalonCloudLogo.png')}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                />
               </Animated.View>
-              <Text style={styles.appTagline}>
-                {isSignUp ? '新しいアカウントを作成' : 'おかえりなさい'}
-              </Text>
+              {(isForgotPassword || isSignUp) && (
+                <Text style={[styles.appTagline, { color: colors.textSecondary }]}>
+                  {isForgotPassword ? 'パスワードをリセット' : '新しいアカウントを作成'}
+                </Text>
+              )}
             </View>
 
             {/* Form Card with Glassmorphism */}
-            <View style={styles.formCard}>
+            <View style={[styles.formCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.formCardInner}>
+                {isForgotPassword ? (
+                  <>
+                    <Text style={[styles.forgotPasswordDescription, { color: colors.textSecondary }]}>
+                      登録したメールアドレスを入力してください。パスワードリセット用のメールをお送りします。
+                    </Text>
+                    <FloatingLabelInput
+                      label="メールアドレス"
+                      value={resetEmail}
+                      onChangeText={(text) => {
+                        setResetEmail(text);
+                        if (errors.resetEmail) setErrors({});
+                      }}
+                      icon="mail-outline"
+                      error={errors.resetEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                    <GradientButton
+                      title={loading ? '送信中...' : 'リセットメールを送信'}
+                      onPress={handleForgotPassword}
+                      loading={loading}
+                      gradient={gradients.salonBlue}
+                      style={styles.submitButton}
+                    />
+                    <View style={styles.divider}>
+                      <View style={styles.dividerLine} />
+                      <Text style={styles.dividerText}>または</Text>
+                      <View style={styles.dividerLine} />
+                    </View>
+                    <AnimatedButton
+                      style={[styles.switchButton, { borderColor: colors.border, backgroundColor: colors.surface2 }]}
+                      onPress={() => {
+                        setIsForgotPassword(false);
+                        setResetEmail('');
+                        setErrors({});
+                      }}
+                    >
+                      <Text style={[styles.switchButtonText, { color: colors.text }]}>ログインに戻る</Text>
+                    </AnimatedButton>
+                  </>
+                ) : (
+                <>
                 {isSignUp && (
                   <>
                     <FloatingLabelInput
@@ -334,14 +420,7 @@ export default function LoginScreen() {
                       icon="person-outline"
                       error={errors.displayName}
                       autoCapitalize="words"
-                    />
-                    <FloatingLabelInput
-                      label="ユーザー名"
-                      value={formData.username}
-                      onChangeText={(text) => handleInputChange('username', text.toLowerCase())}
-                      icon="at-outline"
-                      error={errors.username}
-                      autoCapitalize="none"
+                      testID="login-displayname-input"
                     />
                   </>
                 )}
@@ -354,6 +433,7 @@ export default function LoginScreen() {
                   error={errors.email}
                   keyboardType="email-address"
                   autoCapitalize="none"
+                  testID="login-email-input"
                 />
 
                 <FloatingLabelInput
@@ -363,6 +443,7 @@ export default function LoginScreen() {
                   icon="lock-closed-outline"
                   error={errors.password}
                   secureTextEntry={!showPassword}
+                  testID="login-password-input"
                 />
 
                 {isSignUp && (
@@ -373,6 +454,7 @@ export default function LoginScreen() {
                     icon="lock-closed-outline"
                     error={errors.confirmPassword}
                     secureTextEntry={!showPassword}
+                    testID="login-confirm-password-input"
                   />
                 )}
 
@@ -389,28 +471,43 @@ export default function LoginScreen() {
                     size={18}
                     color={colors.textSecondary}
                   />
-                  <Text style={styles.showPasswordText}>
+                  <Text style={[styles.showPasswordText, { color: colors.textSecondary }]}>
                     {showPassword ? 'パスワードを隠す' : 'パスワードを表示'}
                   </Text>
                 </TouchableOpacity>
 
                 {/* Remember Me */}
                 {!isSignUp && (
-                  <TouchableOpacity
-                    style={styles.rememberMeContainer}
-                    onPress={() => {
-                      lightTap();
-                      setRememberMe(!rememberMe);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
-                      {rememberMe && (
-                        <Ionicons name="checkmark" size={14} color="#fff" />
-                      )}
-                    </View>
-                    <Text style={styles.rememberMeText}>ログイン状態を保持する</Text>
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      style={styles.rememberMeContainer}
+                      onPress={() => {
+                        lightTap();
+                        setRememberMe(!rememberMe);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.checkbox, { borderColor: colors.border, backgroundColor: colors.surface2 }, rememberMe && styles.checkboxChecked]}>
+                        {rememberMe && (
+                          <Ionicons name="checkmark" size={14} color="#fff" />
+                        )}
+                      </View>
+                      <Text style={[styles.rememberMeText, { color: colors.textSecondary }]}>ログイン状態を保持する</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.forgotPasswordButton}
+                      onPress={() => {
+                        lightTap();
+                        setIsForgotPassword(true);
+                        setResetEmail(formData.email);
+                        setErrors({});
+                      }}
+                      activeOpacity={0.7}
+                      testID="login-forgot-password"
+                    >
+                      <Text style={[styles.forgotPasswordText, { color: colors.text }]}>パスワードをお忘れの方</Text>
+                    </TouchableOpacity>
+                  </>
                 )}
 
                 {/* Submit Button */}
@@ -418,34 +515,38 @@ export default function LoginScreen() {
                   title={isSignUp ? 'アカウント作成' : 'ログイン'}
                   onPress={handleSubmit}
                   loading={loading}
-                  gradient={gradients.primary}
+                  gradient={gradients.salonBlue}
                   style={styles.submitButton}
+                  testID="login-submit-button"
                 />
 
                 {/* Divider */}
                 <View style={styles.divider}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>または</Text>
-                  <View style={styles.dividerLine} />
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+                  <Text style={[styles.dividerText, { color: colors.textMuted }]}>または</Text>
+                  <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
                 </View>
 
                 {/* Switch Mode */}
                 <AnimatedButton
-                  style={styles.switchButton}
+                  style={[styles.switchButton, { borderColor: colors.border, backgroundColor: colors.surface2 }]}
                   onPress={switchMode}
                   accessibilityLabel={isSignUp ? '既にアカウントをお持ちの方はこちら' : '新規アカウント作成'}
+                  testID="login-signup-button"
                 >
-                  <Text style={styles.switchButtonText}>
+                  <Text style={[styles.switchButtonText, { color: colors.text }]}>
                     {isSignUp ? '既にアカウントをお持ちの方' : '新規アカウント作成'}
                   </Text>
                 </AnimatedButton>
+                </>
+                )}
               </View>
             </View>
 
             {/* Footer */}
             <View style={styles.footer}>
-              <Text style={styles.footerText}>
-                続行することで、利用規約とプライバシーポリシーに同意したことになります
+              <Text style={[styles.footerText, { color: colors.textMuted }]}>
+                続行することで、利用規約と{'\n'}プライバシーポリシーに同意したことになります
               </Text>
             </View>
           </Animated.View>
@@ -458,25 +559,34 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
   },
-  decorCircle1: {
+  bgTopGradient: {
     position: 'absolute',
-    top: -100,
-    right: -100,
-    width: 250,
-    height: 250,
-    borderRadius: 125,
-    backgroundColor: '#f5f5f5',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: height * 0.45,
+    borderBottomLeftRadius: 60,
+    borderBottomRightRadius: 60,
+    opacity: 0.5,
   },
-  decorCircle2: {
+  decorBlob1: {
     position: 'absolute',
-    bottom: -60,
+    top: -80,
+    right: -80,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    opacity: 0.4,
+  },
+  decorBlob2: {
+    position: 'absolute',
+    top: height * 0.2,
     left: -60,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: '#f8f8f8',
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    opacity: 0.3,
   },
   keyboardView: {
     flex: 1,
@@ -496,33 +606,25 @@ const styles = StyleSheet.create({
     marginBottom: 40,
   },
   appNameContainer: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
   },
-  appNameSnap: {
-    fontSize: 42,
-    fontWeight: '800',
-    color: '#1a1a1a',
-    letterSpacing: -1,
-  },
-  appNameWork: {
-    fontSize: 42,
-    fontWeight: '300',
-    color: '#888',
-    letterSpacing: -1,
+  logoImage: {
+    width: 360,
+    height: 140,
   },
   appTagline: {
     fontSize: 15,
-    color: colors.textSecondary,
-    marginTop: 12,
-    letterSpacing: 0.5,
+    marginTop: 10,
+    letterSpacing: 0.3,
   },
   formCard: {
-    backgroundColor: '#fff',
     borderRadius: borderRadius.xl,
     borderWidth: 1,
-    borderColor: '#f0f0f0',
-    ...shadows.small,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.1,
+    shadowRadius: 32,
+    elevation: 8,
     overflow: 'hidden',
   },
   formCardInner: {
@@ -536,7 +638,6 @@ const styles = StyleSheet.create({
   },
   showPasswordText: {
     ...typography.footnote,
-    color: colors.textSecondary,
     marginLeft: 6,
   },
   rememberMeContainer: {
@@ -549,19 +650,16 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: borderRadius.sm,
     borderWidth: 2,
-    borderColor: colors.border,
     marginRight: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.background,
   },
   checkboxChecked: {
-    backgroundColor: colors.gradientStart,
-    borderColor: colors.gradientStart,
+    backgroundColor: '#444444',
+    borderColor: '#444444',
   },
   rememberMeText: {
     ...typography.subhead,
-    color: colors.textSecondary,
   },
   submitButton: {
     marginTop: 8,
@@ -574,24 +672,19 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: colors.border,
   },
   dividerText: {
     ...typography.footnote,
-    color: colors.textMuted,
     marginHorizontal: 16,
   },
   switchButton: {
     alignItems: 'center',
     paddingVertical: 14,
     borderRadius: borderRadius.lg,
-    borderWidth: 2,
-    borderColor: colors.border,
-    backgroundColor: colors.background,
+    borderWidth: 1.5,
   },
   switchButtonText: {
     ...typography.subhead,
-    color: colors.textSecondary,
     fontWeight: '600',
   },
   footer: {
@@ -600,8 +693,21 @@ const styles = StyleSheet.create({
   },
   footerText: {
     ...typography.caption1,
-    color: colors.textMuted,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  forgotPasswordButton: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  forgotPasswordText: {
+    ...typography.footnote,
+    fontWeight: '500',
+  },
+  forgotPasswordDescription: {
+    ...typography.subhead,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 24,
   },
 });

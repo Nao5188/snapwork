@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  ScrollView,
   Alert,
   SafeAreaView,
   KeyboardAvoidingView,
@@ -15,13 +14,14 @@ import {
   Modal,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Video, ResizeMode } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { postService, authService, fileStorageService } from '@/lib/supabase';
-import AnimatedButton from '@/components/AnimatedButton';
+import Button, { IconButton, TagButton } from '@/components/Button';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
@@ -36,15 +36,13 @@ interface MediaItem {
 export default function CreatePostScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
+  const { colors } = useAppTheme();
 
   const [formData, setFormData] = useState({
     title: '',
-    menuName: '',
-    shootingDate: new Date(),
   });
 
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
-  const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
@@ -61,6 +59,7 @@ export default function CreatePostScreen() {
       duration: 400,
       useNativeDriver: true,
     }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadCustomCategories = async () => {
@@ -170,13 +169,6 @@ export default function CreatePostScreen() {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleDateChange = (event: any, selectedDate?: Date) => {
-    setShowDatePicker(false);
-    if (selectedDate) {
-      setFormData(prev => ({ ...prev, shootingDate: selectedDate }));
-    }
-  };
-
   const selectFromAlbum = () => {
     router.push('/gallery');
   };
@@ -184,8 +176,8 @@ export default function CreatePostScreen() {
   const takePhoto = async () => {
     try {
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        quality: 0.8,
+        mediaTypes: ['images', 'videos'],
+        quality: 1.0,
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
@@ -250,20 +242,14 @@ export default function CreatePostScreen() {
 
       const mainMediaUrl = uploadedMediaUrls[0];
 
-      // メニュー名にカテゴリ情報を含める
-      let menuNameWithCategories = formData.menuName;
+      // カテゴリ情報を含める
+      let menuNameWithCategories = '';
       if (selectedCategories.length > 0) {
         const categoryStr = selectedCategories.join(',');
-        menuNameWithCategories = menuNameWithCategories
-          ? `${menuNameWithCategories}|CATEGORIES:${categoryStr}`
-          : `|CATEGORIES:${categoryStr}`;
+        menuNameWithCategories = `|CATEGORIES:${categoryStr}`;
       }
 
-      let enhancedMenuName = menuNameWithCategories;
-      if (uploadedMediaUrls.length > 1) {
-        const additionalUrls = uploadedMediaUrls.slice(1);
-        enhancedMenuName = `${menuNameWithCategories}|EXTRA_MEDIA:${additionalUrls.join(',')}`;
-      }
+      const enhancedMenuName = menuNameWithCategories;
 
       const postData = {
         title: formData.title || '無題',
@@ -312,11 +298,21 @@ export default function CreatePostScreen() {
 
   const renderMediaItem = ({ item }: { item: MediaItem }) => (
     <View style={styles.mediaItem}>
-      <Image
-        source={{ uri: item.uri }}
-        style={styles.mediaImage}
-        contentFit="cover"
-      />
+      {item.type === 'video' ? (
+        <Video
+          source={{ uri: item.uri }}
+          style={styles.mediaImage}
+          resizeMode={ResizeMode.COVER}
+          shouldPlay={false}
+          isMuted={true}
+        />
+      ) : (
+        <Image
+          source={{ uri: item.uri }}
+          style={styles.mediaImage}
+          contentFit="cover"
+        />
+      )}
       {item.type === 'video' && (
         <View style={styles.videoIndicator}>
           <Ionicons name="play" size={14} color="white" />
@@ -335,31 +331,31 @@ export default function CreatePostScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <KeyboardAvoidingView
-        style={styles.container}
+        style={[styles.container, { backgroundColor: colors.background }]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <AnimatedButton
-            style={styles.backButton}
+        <View style={[styles.header, { backgroundColor: colors.headerBg, borderBottomColor: colors.border }]}>
+          <IconButton
+            icon="chevron-back"
+            variant="ghost"
+            size="medium"
             onPress={() => router.back()}
             accessibilityLabel="戻る"
-          >
-            <Ionicons name="chevron-back" size={24} color="#1a1a1a" />
-          </AnimatedButton>
-          <Text style={styles.headerTitle}>新しい投稿</Text>
-          <AnimatedButton
-            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+          />
+          <Text style={[styles.headerTitle, { color: colors.text }]}>新しい投稿</Text>
+          <Button
+            title={loading ? '投稿中...' : '投稿'}
+            variant="primary"
+            size="small"
             onPress={handleSubmit}
+            loading={loading}
             disabled={loading}
             accessibilityLabel={loading ? '投稿中' : '投稿する'}
-          >
-            <Text style={styles.submitButtonText}>
-              {loading ? '投稿中...' : '投稿'}
-            </Text>
-          </AnimatedButton>
+            testID="create-submit-button"
+          />
         </View>
 
         <Animated.ScrollView
@@ -367,8 +363,8 @@ export default function CreatePostScreen() {
           showsVerticalScrollIndicator={false}
         >
           {/* Media Selection */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>メディア ({mediaItems.length}/5)</Text>
+          <View style={[styles.section, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>メディア ({mediaItems.length}/5)</Text>
 
             <FlatList
               data={mediaItems}
@@ -380,22 +376,29 @@ export default function CreatePostScreen() {
               ListFooterComponent={
                 mediaItems.length < 5 ? (
                   <View style={styles.mediaActions}>
-                    <AnimatedButton
-                      style={styles.mediaActionButton}
-                      onPress={takePhoto}
-                      accessibilityLabel="カメラで撮影"
-                    >
-                      <Ionicons name="camera-outline" size={24} color="#1a1a1a" />
-                      <Text style={styles.mediaActionText}>撮影</Text>
-                    </AnimatedButton>
-                    <AnimatedButton
-                      style={styles.mediaActionButton}
-                      onPress={selectFromAlbum}
-                      accessibilityLabel="アルバムから選択"
-                    >
-                      <Ionicons name="albums-outline" size={24} color="#1a1a1a" />
-                      <Text style={styles.mediaActionText}>アルバム</Text>
-                    </AnimatedButton>
+                    <View style={styles.mediaActionButton}>
+                      <Button
+                        icon="camera-outline"
+                        title="撮影"
+                        variant="outline"
+                        size="small"
+                        onPress={takePhoto}
+                        style={styles.mediaActionButtonInner}
+                        accessibilityLabel="カメラで撮影"
+                        testID="create-add-media-button"
+                      />
+                    </View>
+                    <View style={styles.mediaActionButton}>
+                      <Button
+                        icon="albums-outline"
+                        title="アルバム"
+                        variant="outline"
+                        size="small"
+                        onPress={selectFromAlbum}
+                        style={styles.mediaActionButtonInner}
+                        accessibilityLabel="アルバムから選択"
+                      />
+                    </View>
                   </View>
                 ) : null
               }
@@ -403,108 +406,57 @@ export default function CreatePostScreen() {
           </View>
 
           {/* Post Form */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>投稿内容</Text>
+          <View style={[styles.section, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>投稿内容</Text>
 
             {/* Title */}
             <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>タイトル</Text>
+              <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>タイトル</Text>
               <View style={[
                 styles.inputContainer,
-                focusedField === 'title' && styles.inputContainerFocused,
+                { backgroundColor: colors.surface2 },
+                focusedField === 'title' && { backgroundColor: colors.surface, borderColor: colors.primary },
               ]}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, { color: colors.text }]}
                   value={formData.title}
                   onChangeText={(text) => handleInputChange('title', text)}
                   placeholder="投稿のタイトルを入力（任意）"
-                  placeholderTextColor="#bbb"
+                  placeholderTextColor={colors.textMuted}
                   maxLength={100}
                   onFocus={() => setFocusedField('title')}
                   onBlur={() => setFocusedField(null)}
+                  testID="create-title-input"
                 />
               </View>
             </View>
 
-            {/* Menu Name */}
+            {/* Category Buttons */}
             <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>メニュー名</Text>
-              <View style={[
-                styles.inputContainer,
-                focusedField === 'menuName' && styles.inputContainerFocused,
-              ]}>
-                <TextInput
-                  style={styles.input}
-                  value={formData.menuName}
-                  onChangeText={(text) => handleInputChange('menuName', text)}
-                  placeholder="メニュー名を入力（任意）"
-                  placeholderTextColor="#bbb"
-                  maxLength={50}
-                  onFocus={() => setFocusedField('menuName')}
-                  onBlur={() => setFocusedField(null)}
-                />
-              </View>
-
-              {/* Category Buttons */}
+              <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>カテゴリ</Text>
               <View style={styles.categoryContainer}>
                 {[...DEFAULT_MENU_CATEGORIES, ...customCategories].map((category) => (
-                  <AnimatedButton
+                  <TagButton
                     key={category}
-                    style={[
-                      styles.categoryButton,
-                      selectedCategories.includes(category) && styles.categoryButtonSelected,
-                      customCategories.includes(category) && styles.customCategoryButton,
-                    ]}
+                    title={category}
+                    selected={selectedCategories.includes(category)}
                     onPress={() => toggleCategory(category)}
                     onLongPress={() => handleDeleteCategory(category)}
-                  >
-                    <Text style={[
-                      styles.categoryButtonText,
-                      selectedCategories.includes(category) && styles.categoryButtonTextSelected,
-                    ]}>
-                      {category}
-                    </Text>
-                  </AnimatedButton>
+                    style={customCategories.includes(category) ? styles.customCategoryButton : undefined}
+                  />
                 ))}
-                <AnimatedButton
-                  style={styles.addCategoryButton}
+                <IconButton
+                  icon="add"
+                  variant="outline"
+                  size="small"
                   onPress={() => setShowAddCategoryModal(true)}
-                >
-                  <Ionicons name="add" size={18} color="#1a1a1a" />
-                </AnimatedButton>
+                  style={styles.addCategoryButton}
+                />
               </View>
             </View>
 
-            {/* Shooting Date */}
-            <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>撮影日時</Text>
-              <AnimatedButton
-                style={styles.dateButton}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <Ionicons name="calendar-outline" size={20} color="#888" />
-                <Text style={styles.dateButtonText}>
-                  {formData.shootingDate.toLocaleDateString('ja-JP', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Text>
-              </AnimatedButton>
-            </View>
           </View>
         </Animated.ScrollView>
-
-        {showDatePicker && (
-          <DateTimePicker
-            value={formData.shootingDate}
-            mode="datetime"
-            display="default"
-            onChange={handleDateChange}
-          />
-        )}
 
         {/* Add Category Modal */}
         <Modal
@@ -513,19 +465,23 @@ export default function CreatePostScreen() {
           animationType="fade"
           onRequestClose={() => setShowAddCategoryModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>新しいカテゴリを追加</Text>
+          <KeyboardAvoidingView
+            style={styles.modalOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>新しいカテゴリを追加</Text>
               <View style={[
                 styles.inputContainer,
-                focusedField === 'newCategory' && styles.inputContainerFocused,
+                { backgroundColor: colors.surface2 },
+                focusedField === 'newCategory' && { backgroundColor: colors.surface, borderColor: colors.primary },
               ]}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, { color: colors.text }]}
                   value={newCategoryName}
                   onChangeText={setNewCategoryName}
                   placeholder="カテゴリ名を入力"
-                  placeholderTextColor="#bbb"
+                  placeholderTextColor={colors.textMuted}
                   maxLength={20}
                   onFocus={() => setFocusedField('newCategory')}
                   onBlur={() => setFocusedField(null)}
@@ -533,24 +489,30 @@ export default function CreatePostScreen() {
                 />
               </View>
               <View style={styles.modalButtons}>
-                <AnimatedButton
-                  style={styles.modalCancelButton}
-                  onPress={() => {
-                    setNewCategoryName('');
-                    setShowAddCategoryModal(false);
-                  }}
-                >
-                  <Text style={styles.modalCancelButtonText}>キャンセル</Text>
-                </AnimatedButton>
-                <AnimatedButton
-                  style={styles.modalSubmitButton}
-                  onPress={handleAddCategory}
-                >
-                  <Text style={styles.modalSubmitButtonText}>追加</Text>
-                </AnimatedButton>
+                <View style={styles.modalButton}>
+                  <Button
+                    title="キャンセル"
+                    variant="secondary"
+                    size="medium"
+                    fullWidth
+                    onPress={() => {
+                      setNewCategoryName('');
+                      setShowAddCategoryModal(false);
+                    }}
+                  />
+                </View>
+                <View style={styles.modalButton}>
+                  <Button
+                    title="追加"
+                    variant="primary"
+                    size="medium"
+                    fullWidth
+                    onPress={handleAddCategory}
+                  />
+                </View>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -568,54 +530,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 12,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  backButton: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'flex-start',
+    borderBottomColor: '#e5e5e5',
   },
   headerTitle: {
     fontSize: 17,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  submitButton: {
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  submitButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: '#444444',
   },
   content: {
     flex: 1,
     paddingHorizontal: 16,
   },
   section: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
     padding: 20,
     marginVertical: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 8,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 3,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#444444',
     marginBottom: 16,
   },
   mediaList: {
@@ -665,19 +607,18 @@ const styles = StyleSheet.create({
   mediaActionButton: {
     width: 88,
     height: 88,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
-    borderStyle: 'dashed',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  mediaActionText: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 6,
-    fontWeight: '500',
+  mediaActionButtonInner: {
+    width: '100%',
+    height: '100%',
+    flexDirection: 'column',
+    borderWidth: 1.5,
+    borderColor: '#e5e5e5',
+    borderStyle: 'dashed',
+    borderRadius: 14,
+    backgroundColor: '#fafafa',
   },
   inputWrapper: {
     marginBottom: 20,
@@ -685,78 +626,36 @@ const styles = StyleSheet.create({
   inputLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#555',
+    color: '#666666',
     marginBottom: 8,
     marginLeft: 4,
   },
   inputContainer: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
     borderRadius: 12,
     borderWidth: 1.5,
     borderColor: 'transparent',
   },
   inputContainerFocused: {
     backgroundColor: '#fff',
-    borderColor: '#1a1a1a',
+    borderColor: '#444444',
   },
   input: {
     paddingVertical: 14,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: '#1a1a1a',
-  },
-  dateButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    gap: 10,
-  },
-  dateButtonText: {
-    fontSize: 16,
-    color: '#1a1a1a',
+    color: '#444444',
   },
   categoryContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginTop: 12,
-  },
-  categoryButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#f5f5f5',
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
-  },
-  categoryButtonSelected: {
-    backgroundColor: '#1a1a1a',
-    borderColor: '#1a1a1a',
-  },
-  categoryButtonText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#555',
-  },
-  categoryButtonTextSelected: {
-    color: '#fff',
   },
   customCategoryButton: {
     borderStyle: 'dashed',
   },
   addCategoryButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#f5f5f5',
-    borderWidth: 1.5,
-    borderColor: '#e5e5e5',
     borderStyle: 'dashed',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   modalOverlay: {
     flex: 1,
@@ -774,7 +673,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: '#444444',
     marginBottom: 20,
     textAlign: 'center',
   },
@@ -783,28 +682,7 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 20,
   },
-  modalCancelButton: {
+  modalButton: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-  },
-  modalCancelButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#555',
-  },
-  modalSubmitButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#1a1a1a',
-    alignItems: 'center',
-  },
-  modalSubmitButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
   },
 });

@@ -18,6 +18,7 @@ interface AnimatedButtonProps {
   accessibilityLabel?: string;
   accessibilityHint?: string;
   accessibilityRole?: 'button' | 'link' | 'menuitem';
+  testID?: string;
 }
 
 export default function AnimatedButton({
@@ -30,6 +31,7 @@ export default function AnimatedButton({
   accessibilityLabel,
   accessibilityHint,
   accessibilityRole = 'button',
+  testID,
 }: AnimatedButtonProps) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -70,6 +72,7 @@ export default function AnimatedButton({
       accessibilityHint={accessibilityHint}
       accessibilityRole={accessibilityRole}
       accessibilityState={{ disabled }}
+      testID={testID}
     >
       <Animated.View
         style={[

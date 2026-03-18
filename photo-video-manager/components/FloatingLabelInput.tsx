@@ -11,7 +11,8 @@ import {
   AccessibilityInfo,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, borderRadius, typography } from '@/lib/theme';
+import { borderRadius, typography, colors as staticColors } from '@/lib/theme';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 interface FloatingLabelInputProps extends TextInputProps {
   label: string;
@@ -30,6 +31,7 @@ export default function FloatingLabelInput({
   onBlur,
   ...props
 }: FloatingLabelInputProps) {
+  const { colors } = useAppTheme();
   const [isFocused, setIsFocused] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
   const labelAnim = useRef(new Animated.Value(value ? 1 : 0)).current;
@@ -49,6 +51,7 @@ export default function FloatingLabelInput({
       duration: 150,
       useNativeDriver: false,
     }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFocused, value, reduceMotion]);
 
   const handleFocus = (e: any) => {
@@ -73,7 +76,7 @@ export default function FloatingLabelInput({
 
   const labelColor = labelAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [colors.textMuted, isFocused ? colors.accent : colors.textSecondary],
+    outputRange: [colors.textMuted, isFocused ? colors.text : colors.textSecondary],
   });
 
   return (
@@ -81,7 +84,8 @@ export default function FloatingLabelInput({
       <View
         style={[
           styles.inputContainer,
-          isFocused && styles.inputContainerFocused,
+          { backgroundColor: colors.inputBg, borderColor: colors.border },
+          isFocused && { borderColor: colors.text, backgroundColor: colors.surface },
           error && styles.inputContainerError,
         ]}
       >
@@ -89,7 +93,7 @@ export default function FloatingLabelInput({
           <Ionicons
             name={icon}
             size={20}
-            color={isFocused ? colors.accent : colors.textMuted}
+            color={isFocused ? colors.text : colors.textMuted}
             style={styles.icon}
           />
         )}
@@ -100,14 +104,14 @@ export default function FloatingLabelInput({
               {
                 top: labelTop,
                 fontSize: labelFontSize,
-                color: error ? colors.error : labelColor,
+                color: error ? staticColors.error : labelColor,
               },
             ]}
           >
             {label}
           </Animated.Text>
           <TextInput
-            style={[styles.input, icon && styles.inputWithIcon]}
+            style={[styles.input, { color: colors.text }, icon && styles.inputWithIcon]}
             value={value}
             onFocus={handleFocus}
             onBlur={handleBlur}
@@ -130,19 +134,14 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.cardBackground,
     borderRadius: borderRadius.lg,
     borderWidth: 2,
-    borderColor: colors.border,
     minHeight: 60,
     paddingHorizontal: 16,
   },
-  inputContainerFocused: {
-    borderColor: colors.accent,
-    backgroundColor: colors.background,
-  },
+  inputContainerFocused: {},
   inputContainerError: {
-    borderColor: colors.error,
+    borderColor: staticColors.error,
   },
   icon: {
     marginRight: 12,
@@ -160,7 +159,6 @@ const styles = StyleSheet.create({
   },
   input: {
     ...typography.body,
-    color: colors.textPrimary,
     paddingTop: 18,
     paddingBottom: 6,
   },
@@ -169,7 +167,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     ...typography.caption1,
-    color: colors.error,
+    color: staticColors.error,
     marginTop: 6,
     marginLeft: 16,
   },

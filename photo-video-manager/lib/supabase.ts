@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storageService as localStorageService } from './storage';
 
 // Supabase設定
@@ -6,7 +7,14 @@ import { storageService as localStorageService } from './storage';
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    storage: AsyncStorage,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
 
 // データベーステーブル型定義
 export interface User {
@@ -45,15 +53,10 @@ export const fileStorageService = {
   // アバター画像をアップロード
   async uploadAvatar(userId: string, imageUri: string) {
     try {
-      console.log('Uploading avatar for user:', userId);
-      console.log('Image URI:', imageUri);
-
       // ファイル拡張子を取得
       const fileExtension = imageUri.split('.').pop()?.split('?')[0] || 'jpg';
       // ユーザーIDをフォルダとして使用し、RLSポリシーと一致させる
       const fileName = `${userId}/avatar_${Date.now()}.${fileExtension}`;
-
-      console.log('Uploading file:', fileName);
 
       // fetchを使用してローカルファイルを読み込み、blobに変換
       const response = await fetch(imageUri);
@@ -64,7 +67,6 @@ export const fileStorageService = {
 
       // Blobを取得
       const blob = await response.blob();
-      console.log('Blob size:', blob.size, 'type:', blob.type);
 
       // React Native用のBlob処理
       // FileReaderを使用してBlobをArrayBufferに変換
@@ -84,10 +86,8 @@ export const fileStorageService = {
       const arrayBuffer = await fileReaderPromise;
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      console.log('Converted to Uint8Array, size:', uint8Array.length);
-
       // Supabase Storageにアップロード
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('avatars')
         .upload(fileName, uint8Array, {
           contentType: blob.type || `image/${fileExtension}`,
@@ -99,17 +99,12 @@ export const fileStorageService = {
         throw error;
       }
 
-      console.log('Upload successful:', data);
-
       // 公開URLを取得
       const { data: publicUrlData } = supabase.storage
         .from('avatars')
         .getPublicUrl(fileName);
 
-      const publicUrl = publicUrlData.publicUrl;
-      console.log('Public URL:', publicUrl);
-
-      return publicUrl;
+      return publicUrlData.publicUrl;
     } catch (error) {
       console.error('Failed to upload avatar:', error);
       throw error;
@@ -123,16 +118,19 @@ export const fileStorageService = {
         return; // ローカルファイルやプレースホルダーは削除しない
       }
 
-      // URLからファイル名を抽出
+      // URLから Supabase Storage のパスを抽出
+      // 形式: https://xxx.supabase.co/storage/v1/object/public/avatars/userId/filename.ext
       const url = new URL(avatarUrl);
-      const pathSegments = url.pathname.split('/');
-      const fileName = pathSegments[pathSegments.length - 1];
+      const publicPathPrefix = '/storage/v1/object/public/avatars/';
+      const filePath = url.pathname.startsWith(publicPathPrefix)
+        ? url.pathname.slice(publicPathPrefix.length)
+        : url.pathname.split('/').slice(-2).join('/');
 
-      console.log('Deleting old avatar:', fileName);
+      console.log('Deleting old avatar:', filePath);
 
       const { error } = await supabase.storage
         .from('avatars')
-        .remove([fileName]);
+        .remove([filePath]);
 
       if (error) {
         console.error('Delete error:', error);
@@ -147,12 +145,8 @@ export const fileStorageService = {
   // 投稿画像をアップロード
   async uploadPostImage(userId: string, imageUri: string, postId?: string): Promise<string> {
     try {
-      console.log('Uploading post image for user:', userId);
-      console.log('Image URI:', imageUri);
-
-      // ローカルファイルでない場合はそのまま返す
-      if (!imageUri.startsWith('file://')) {
-        console.log('Not a local file, returning as-is');
+      // すでに公開URLの場合はそのまま返す
+      if (imageUri.startsWith('https://') || imageUri.startsWith('http://')) {
         return imageUri;
       }
 
@@ -163,8 +157,6 @@ export const fileStorageService = {
       const randomStr = Math.random().toString(36).substring(7);
       const fileName = `${userId}/${postId || 'temp'}_${timestamp}_${randomStr}.${fileExtension}`;
 
-      console.log('Uploading file:', fileName);
-
       // fetchを使用してローカルファイルを読み込み、blobに変換
       const response = await fetch(imageUri);
 
@@ -174,7 +166,6 @@ export const fileStorageService = {
 
       // Blobを取得
       const blob = await response.blob();
-      console.log('Blob size:', blob.size, 'type:', blob.type);
 
       // FileReaderを使用してBlobをArrayBufferに変換
       const fileReaderPromise = new Promise<ArrayBuffer>((resolve, reject) => {
@@ -193,13 +184,15 @@ export const fileStorageService = {
       const arrayBuffer = await fileReaderPromise;
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      console.log('Converted to Uint8Array, size:', uint8Array.length);
-
       // Supabase Storageにアップロード (posts バケットを使用)
-      const { data, error } = await supabase.storage
+      const videoExtensions = ['mp4', 'mov', 'avi', 'webm', 'm4v'];
+      const isVideoFile = videoExtensions.includes(fileExtension.toLowerCase());
+      const contentType = blob.type || (isVideoFile ? `video/${fileExtension}` : `image/${fileExtension}`);
+
+      const { error } = await supabase.storage
         .from('posts')
         .upload(fileName, uint8Array, {
-          contentType: blob.type || `image/${fileExtension}`,
+          contentType,
           upsert: true
         });
 
@@ -208,17 +201,12 @@ export const fileStorageService = {
         throw error;
       }
 
-      console.log('Upload successful:', data);
-
       // 公開URLを取得
       const { data: publicUrlData } = supabase.storage
         .from('posts')
         .getPublicUrl(fileName);
 
-      const publicUrl = publicUrlData.publicUrl;
-      console.log('Public URL:', publicUrl);
-
-      return publicUrl;
+      return publicUrlData.publicUrl;
     } catch (error) {
       console.error('Failed to upload post image:', error);
       throw error;
@@ -230,19 +218,17 @@ export const fileStorageService = {
 export const userService = {
   // ユーザープロフィール取得
   async getProfile(userId: string) {
-    console.log('Getting profile for user:', userId);
     const { data, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', userId)
       .single();
-    
+
     if (error) {
       console.error('Profile fetch error:', error);
       throw error;
     }
-    
-    console.log('Profile fetched:', data);
+
     return data;
   },
 
@@ -462,17 +448,15 @@ export const postService = {
       throw new Error('この投稿を編集する権限がありません');
     }
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('posts')
       .update({
         ...updates,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', postId)
-      .single();
-    
+      .eq('id', postId);
+
     if (error) throw error;
-    return data;
   },
   // ユーザーの投稿一覧取得
   async getUserPosts(userId: string) {
@@ -499,8 +483,6 @@ export const postService = {
 
   // 投稿作成
   async createPost(post: Omit<Post, 'id' | 'created_at' | 'updated_at'>) {
-    console.log('Creating post:', post);
-    
     const { data, error } = await supabase
       .from('posts')
       .insert({
@@ -510,13 +492,12 @@ export const postService = {
       })
       .select()
       .single();
-    
+
     if (error) {
       console.error('Post creation error:', error);
       throw error;
     }
-    
-    console.log('Post created successfully:', data);
+
     return data;
   },
 
@@ -572,11 +553,11 @@ export const postService = {
   },
 
   // 投稿のメディアを設定（既存を削除して新規追加）
-  async setPostMedia(postId: string, mediaItems: Array<{
+  async setPostMedia(postId: string, mediaItems: {
     media_url: string;
     is_video: boolean;
     display_order: number;
-  }>) {
+  }[]) {
     try {
       console.log(`=== SETTING POST MEDIA FOR ${postId} ===`);
       console.log('Media items to insert:', mediaItems);
@@ -712,7 +693,7 @@ export const mediaLibraryService = {
 // 認証関連の操作
 export const authService = {
   // サインアップ
-  async signUp(email: string, password: string, userData: { username: string; display_name: string }) {
+  async signUp(email: string, password: string, userData: { username: string; display_name: string }, emailRedirectTo?: string) {
     // まず既存ユーザーをチェック（usersテーブル）
     const { data: existingUsers } = await supabase
       .from('users')
@@ -724,27 +705,7 @@ export const authService = {
       throw new Error('User already registered');
     }
 
-    // ユーザー名の重複チェック（念のため二重チェック）
-    const { data: existingUsername } = await supabase
-      .from('users')
-      .select('username')
-      .eq('username', userData.username)
-      .limit(1);
-
-    if (existingUsername && existingUsername.length > 0) {
-      throw new Error('Username already exists');
-    }
-
-    // 表示名の重複チェック（念のため二重チェック）
-    const { data: existingDisplayName } = await supabase
-      .from('users')
-      .select('display_name')
-      .eq('display_name', userData.display_name)
-      .limit(1);
-
-    if (existingDisplayName && existingDisplayName.length > 0) {
-      throw new Error('Display name already exists');
-    }
+    // display_name重複チェックはUI層（login.tsx）で実施済みのためここでは省略
 
     // サインアップ時にmetadataにユーザー情報を渡す
     // Database Triggerがこの情報を使ってプロフィールを自動作成
@@ -752,7 +713,7 @@ export const authService = {
       email,
       password,
       options: {
-        emailRedirectTo: undefined, // メール確認リダイレクトを無効化
+        emailRedirectTo,
         data: {
           username: userData.username,
           display_name: userData.display_name,
@@ -775,12 +736,6 @@ export const authService = {
     // Database Triggerがプロフィールを自動作成する
     // トリガーが SECURITY DEFINER で設定されているため、
     // auth.users への INSERT と同時にプロフィールが作成される
-    console.log('✅ User created successfully. Profile created by database trigger.');
-    console.log('User ID:', data.user.id);
-
-    // 注意: signUp直後はセッションがない場合があるため、
-    // プロフィールの存在確認はスキップする（トリガーを信頼）
-    // ログイン時にプロフィールの存在確認を行う
 
     return data;
   },
@@ -796,8 +751,6 @@ export const authService = {
     
     // ログイン時にusersテーブルにプロフィールが存在するか確認
     if (data.user) {
-      console.log('Checking for existing profile for user:', data.user.id);
-      
       const { data: profile, error: profileCheckError } = await supabase
         .from('users')
         .select('id, username, display_name, email')
@@ -809,11 +762,7 @@ export const authService = {
       }
 
       if (!profile) {
-        console.error('❌ No profile found for authenticated user. This should not happen.');
-        console.error('💡 The user may have been created without proper profile setup.');
         throw new Error('ユーザープロフィールが見つかりません。アカウントが正しく作成されていない可能性があります。');
-      } else {
-        console.log('✅ Profile found:', profile);
       }
 
       // Remember Me設定を保存
@@ -850,6 +799,20 @@ export const authService = {
     return supabase.auth.onAuthStateChange(callback);
   },
 
+  // パスワードリセットメールを送信
+  async resetPassword(email: string, redirectTo: string) {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo,
+    });
+    if (error) throw error;
+  },
+
+  // パスワードを更新
+  async updatePassword(newPassword: string) {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) throw error;
+  },
+
   // 自動ログインを試行
   async attemptAutoLogin() {
     try {
@@ -861,9 +824,10 @@ export const authService = {
 
       // Supabaseの現在のセッションを確認
       const { data: { user }, error } = await supabase.auth.getUser();
-      
+
       if (error || !user) {
-        // セッションが無効の場合はRemember Me設定をクリア
+        // セッションが無効またはリフレッシュトークン切れの場合はセッションとRemember Me設定をクリア
+        await supabase.auth.signOut();
         await localStorageService.clearRememberMe();
         return { success: false, reason: 'No valid session' };
       }

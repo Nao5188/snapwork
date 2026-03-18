@@ -4,7 +4,10 @@ import { Camera, CameraView, CameraType, FlashMode } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 import { mediaLibraryService, authService } from '@/lib/supabase';
+import { cameraCaptureService } from '@/lib/cameraCapture';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -13,16 +16,38 @@ export default function CameraScreen() {
   const [cameraType, setCameraType] = useState<CameraType>('back');
   const [flashMode, setFlashMode] = useState<FlashMode>('off');
   const [isRecording, setIsRecording] = useState(false);
-  const [currentMode, setCurrentMode] = useState<'photo' | 'video'>('photo');
+  const [currentMode, setCurrentMode] = useState<'picture' | 'video'>('picture');
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const BASE_ZOOM = 0.10; // iPhoneの標準1x相当
+  const [zoom, setZoom] = useState(0.10);
   const cameraRef = useRef<CameraView>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const zoomAtPinchStart = useRef(0);
+
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => {
+      zoomAtPinchStart.current = zoom;
+    })
+    .onUpdate((e) => {
+      const newZoom = Math.min(1, Math.max(0, zoomAtPinchStart.current + (e.scale - 1) * 0.5));
+      runOnJS(setZoom)(newZoom);
+    });
 
   useEffect(() => {
     checkAuthStatus();
     getCameraPermissions();
+    return () => { cameraCaptureService.unregister(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const action = currentMode === 'picture' ? takePicture : recordVideo;
+    cameraCaptureService.register(action);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMode, isRecording, isCameraReady]);
 
   const checkAuthStatus = async () => {
     try {
@@ -101,51 +126,53 @@ export default function CameraScreen() {
   const saveToAppLibrary = async (mediaUri: string, isVideo: boolean = false) => {
     try {
       const { data: { user } } = await authService.getCurrentUser();
-      
+
       if (!user) {
         console.log('ユーザーがログインしていません');
         return;
       }
+
+      // デバイスライブラリに保存し、永続的なアセットURIを取得
+      const asset = await MediaLibrary.createAssetAsync(mediaUri);
+      const assetInfo = await MediaLibrary.getAssetInfoAsync(asset);
+      const persistentUri = assetInfo.localUri || asset.uri;
 
       // ファイル名を生成
       const now = new Date();
       const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
       const filename = `${isVideo ? 'video' : 'photo'}_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`;
 
-      // media_libraryテーブルに登録
+      // media_libraryテーブルに永続URIで登録
       await mediaLibraryService.addMedia({
         user_id: user.id,
         filename: filename,
-        file_path: mediaUri,
+        file_path: persistentUri,
         mime_type: isVideo ? 'video/mp4' : 'image/jpeg',
         is_video: isVideo,
       });
-      
+
       console.log('Media saved to app library:', filename);
-      
+
     } catch (error) {
       console.error('Error saving to app library:', error);
     }
   };
 
   const takePicture = async () => {
-    console.log('takePicture called - isCameraReady:', isCameraReady, 'cameraRef.current:', !!cameraRef.current);
     if (cameraRef.current) {
       try {
-        const photo = await cameraRef.current.takePictureAsync();
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 1,
+          imageType: 'jpg',
+        });
         if (photo) {
-          // アルバムに保存
-          await MediaLibrary.saveToLibraryAsync(photo.uri);
-          
-          // アプリのライブラリにも登録
           await saveToAppLibrary(photo.uri, false);
-          
           Alert.alert('写真を撮影しました!', 'アルバムに保存されました。', [
             { text: '続けて撮影', style: 'cancel' },
-            { 
-              text: 'アルバムで確認', 
-              onPress: () => router.push('/gallery')
-            }
+            {
+              text: 'アルバムで確認',
+              onPress: () => router.push('/gallery'),
+            },
           ]);
         }
       } catch (error) {
@@ -153,7 +180,6 @@ export default function CameraScreen() {
         Alert.alert('エラー', '写真の撮影に失敗しました。');
       }
     } else {
-      console.log('Camera not ready or ref is null - isCameraReady:', isCameraReady, 'cameraRef:', !!cameraRef.current);
       if (!isCameraReady) {
         Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
       } else {
@@ -169,6 +195,12 @@ export default function CameraScreen() {
       try {
         if (isRecording) {
           console.log('Stopping video recording...');
+          // タイマー停止
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          setRecordingSeconds(0);
           // 録画停止
           cameraRef.current.stopRecording();
           setRetryCount(0); // リセット
@@ -183,25 +215,41 @@ export default function CameraScreen() {
           }
           
           setIsRecording(true);
+          cameraCaptureService.setRecording(true);
+          setRecordingSeconds(0);
+          timerRef.current = setInterval(() => {
+            setRecordingSeconds(prev => {
+              if (prev >= 59) {
+                // 60秒で自動停止
+                cameraRef.current?.stopRecording();
+                return prev;
+              }
+              return prev + 1;
+            });
+          }, 1000);
+
           const video = await cameraRef.current.recordAsync({
             maxDuration: 60, // 最大60秒
           });
-          
+
           console.log('Recording completed:', video);
-          // 録画が完了した時の処理
+          // タイマー停止
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          setRecordingSeconds(0);
           setIsRecording(false);
+          cameraCaptureService.setRecording(false);
           setRetryCount(0); // リセット
           if (video && video.uri) {
-            // アルバムに保存
-            await MediaLibrary.saveToLibraryAsync(video.uri);
-            
-            // アプリのライブラリにも登録
+            // デバイスライブラリへ保存＆アプリのライブラリに登録
             await saveToAppLibrary(video.uri, true);
-            
+
             Alert.alert('動画を保存しました!', 'アルバムに保存されました。', [
               { text: '続けて撮影', style: 'cancel' },
-              { 
-                text: 'アルバムで確認', 
+              {
+                text: 'アルバムで確認',
                 onPress: () => router.push('/gallery')
               }
             ]);
@@ -210,8 +258,14 @@ export default function CameraScreen() {
       } catch (error) {
         console.error('動画録画エラー:', error);
         console.error('Error details:', error instanceof Error ? error.message : String(error));
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        setRecordingSeconds(0);
         setIsRecording(false);
-        
+        cameraCaptureService.setRecording(false);
+
         // カメラが準備できていない場合のリトライ処理（最大3回まで）
         if (error instanceof Error && error.message.includes('Camera is not ready') && retryCount < 3) {
           console.log(`Camera not ready, retrying... (attempt ${retryCount + 1}/3)`);
@@ -244,15 +298,8 @@ export default function CameraScreen() {
   };
 
   const toggleCameraType = () => {
-    console.log('Toggling camera type');
-    setIsCameraReady(false); // カメラ切り替え時は準備状態をリセット
-    setRetryCount(0); // リトライカウントもリセット
+    setIsCameraReady(false); // facing変更でonCameraReadyが再発火するまでリセット
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
-    
-    // カメラ切り替え後の準備状態リセット
-    setTimeout(() => {
-      console.log('Camera type switched, waiting for camera to be ready...');
-    }, 100);
   };
 
   const toggleFlash = () => {
@@ -327,162 +374,144 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      <CameraView
-        ref={cameraRef}
-        style={styles.camera}
-        facing={cameraType}
-        flash={flashMode}
-        onCameraReady={() => {
-          console.log('Camera is ready!');
-          // より長い遅延で確実に準備完了を待つ
-          setTimeout(() => {
+      {/* Top Controls */}
+      <View style={styles.topControls}>
+        <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
+          <Ionicons name="close" size={28} color="white" />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.topButton} onPress={() => setShowGrid(!showGrid)}>
+          <Ionicons
+            name="grid-outline"
+            size={24}
+            color={showGrid ? 'white' : 'rgba(255,255,255,0.6)'}
+          />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.topButton} onPress={toggleFlash}>
+          <Ionicons
+            name={flashMode === 'off' ? 'flash-off' : flashMode === 'on' ? 'flash' : 'flash-outline'}
+            size={24}
+            color={flashMode === 'off' ? 'rgba(255,255,255,0.6)' : 'white'}
+          />
+        </TouchableOpacity>
+      </View>
+
+      {/* Camera Viewfinder */}
+      <GestureDetector gesture={pinchGesture}>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing={cameraType}
+          flash={flashMode}
+          mode={currentMode}
+          zoom={zoom}
+          onCameraReady={() => {
             setIsCameraReady(true);
-            console.log('Camera ready state set to true');
-          }, 1000);
-        }}
-        onMountError={(error) => {
-          console.error('Camera mount error:', error);
-          setIsCameraReady(false);
-        }}
-      >
-        {/* Grid Overlay */}
-        {showGrid && (
-          <View style={styles.gridOverlay} pointerEvents="none">
-            <View style={styles.gridRow}>
-              <View style={styles.gridCell} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+          }}
+          onMountError={(error) => {
+            console.error('Camera mount error:', error);
+            setIsCameraReady(false);
+          }}
+        >
+          {/* Grid Overlay */}
+          {showGrid && (
+            <View style={styles.gridOverlay} pointerEvents="none">
+              <View style={styles.gridRow}>
+                <View style={styles.gridCell} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              </View>
+              <View style={[styles.gridRow, styles.gridRowBorderTop]}>
+                <View style={styles.gridCell} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              </View>
+              <View style={[styles.gridRow, styles.gridRowBorderTop]}>
+                <View style={styles.gridCell} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+                <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
+              </View>
             </View>
-            <View style={[styles.gridRow, styles.gridRowBorderTop]}>
-              <View style={styles.gridCell} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
-            </View>
-            <View style={[styles.gridRow, styles.gridRowBorderTop]}>
-              <View style={styles.gridCell} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
-              <View style={[styles.gridCell, styles.gridCellBorderLeft]} />
-            </View>
+          )}
+
+          {/* Viewfinder Corner Brackets */}
+          <View style={styles.viewfinderCorners} pointerEvents="none">
+            <View style={[styles.corner, styles.cornerTL]} />
+            <View style={[styles.corner, styles.cornerTR]} />
+            <View style={[styles.corner, styles.cornerBL]} />
+            <View style={[styles.corner, styles.cornerBR]} />
           </View>
-        )}
 
-        {/* Top Controls */}
-        <View style={styles.topControls}>
-          <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
-            <Ionicons name="close" size={28} color="white" />
+          {/* Zoom Indicator */}
+          {zoom > BASE_ZOOM + 0.01 && (
+            <TouchableOpacity
+              style={styles.zoomIndicator}
+              onPress={() => setZoom(BASE_ZOOM)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.zoomText}>{(zoom / BASE_ZOOM).toFixed(1)}x</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Recording Indicator */}
+          {isRecording && (
+            <View style={styles.recordingIndicator}>
+              <View style={styles.recordingAnimation}>
+                <View style={styles.recordingDot} />
+                <Text style={styles.recordingText}>REC</Text>
+              </View>
+              <View style={styles.recordingTimer}>
+                <Text style={styles.recordingTimerText}>
+                  {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')}
+                </Text>
+              </View>
+            </View>
+          )}
+        </CameraView>
+      </GestureDetector>
+
+      {/* Bottom Controls */}
+      <View style={styles.bottomControls}>
+        {/* Mode Selector */}
+        <View style={styles.modeContainer}>
+          <TouchableOpacity
+            style={[styles.modeButton, currentMode === 'picture' && styles.activeModeButton]}
+            onPress={() => { setCurrentMode('picture'); }}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.modeText, currentMode === 'picture' && styles.activeModeText]}>写真</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity style={styles.topButton} onPress={() => setShowGrid(!showGrid)}>
-            <Ionicons
-              name="grid-outline"
-              size={24}
-              color={showGrid ? '#FFD700' : 'rgba(255,255,255,0.6)'}
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.topButton} onPress={toggleFlash}>
-            <Ionicons
-              name={flashMode === 'off' ? 'flash-off' : flashMode === 'on' ? 'flash' : 'flash-outline'}
-              size={24}
-              color={flashMode === 'off' ? 'rgba(255,255,255,0.6)' : '#FFD700'}
-            />
+          <TouchableOpacity
+            style={[styles.modeButton, currentMode === 'video' && styles.activeModeButton]}
+            onPress={() => { setCurrentMode('video'); }}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.modeText, currentMode === 'video' && styles.activeModeText]}>動画</Text>
           </TouchableOpacity>
         </View>
 
+        {/* Control Buttons */}
+        <View style={styles.controlsContainer}>
+          <TouchableOpacity
+            style={styles.albumButton}
+            onPress={() => router.push('/gallery')}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="images" size={26} color="rgba(255,255,255,0.9)" />
+          </TouchableOpacity>
 
-        {/* Bottom Controls */}
-        <View style={styles.bottomControls}>
-          {/* Mode Selector */}
-          <View style={styles.modeContainer}>
-            <TouchableOpacity 
-              style={[styles.modeButton, currentMode === 'photo' && styles.activeModeButton]}
-              onPress={() => {
-                console.log('Switching to photo mode');
-                setCurrentMode('photo');
-                // モード切り替え時はカメラ状態をリセット
-                setIsCameraReady(false);
-                setRetryCount(0);
-                // カメラの準備完了を待つ
-                setTimeout(() => {
-                  console.log('Photo mode selected, camera should be ready soon...');
-                }, 300);
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.modeText, currentMode === 'photo' && styles.activeModeText]}>写真</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.modeButton, currentMode === 'video' && styles.activeModeButton]}
-              onPress={() => {
-                console.log('Switching to video mode');
-                setCurrentMode('video');
-                // モード切り替え時はカメラ状態をリセット
-                setIsCameraReady(false);
-                setRetryCount(0);
-                // カメラの準備完了を待つ
-                setTimeout(() => {
-                  console.log('Video mode selected, camera should be ready soon...');
-                }, 300);
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.modeText, currentMode === 'video' && styles.activeModeText]}>動画</Text>
-            </TouchableOpacity>
-          </View>
-          
-          {/* Control Buttons */}
-          <View style={styles.controlsContainer}>
-            <TouchableOpacity 
-              style={styles.albumButton}
-              onPress={() => {
-                console.log('Navigating to gallery');
-                router.push('/gallery');
-              }}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="images" size={28} color="white" />
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={[
-                styles.captureButton, 
-                isRecording && styles.recording,
-                !isCameraReady && styles.captureButtonDisabled
-              ]} 
-              onPress={currentMode === 'photo' ? takePicture : recordVideo}
-              activeOpacity={0.8}
-            >
-              <View style={[
-                styles.captureButtonInner,
-                isRecording && styles.recordingInner,
-                currentMode === 'video' && !isRecording && styles.videoCaptureInner
-              ]} />
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={styles.flipButton}
-              onPress={toggleCameraType}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="camera-reverse" size={28} color="white" />
-            </TouchableOpacity>
-          </View>
+          <View style={styles.captureButtonPlaceholder} />
+
+          <TouchableOpacity
+            style={styles.flipButton}
+            onPress={toggleCameraType}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="camera-reverse" size={26} color="rgba(255,255,255,0.9)" />
+          </TouchableOpacity>
         </View>
-
-        {/* Recording Indicator */}
-        {isRecording && (
-          <View style={styles.recordingIndicator}>
-            <View style={styles.recordingAnimation}>
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingText}>REC</Text>
-            </View>
-            <View style={styles.recordingTimer}>
-              <Text style={styles.recordingTimerText}>00:30</Text>
-            </View>
-          </View>
-        )}
-      </CameraView>
-      
+      </View>
     </View>
   );
 }
@@ -501,12 +530,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 50,
-    paddingBottom: 20,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
+    paddingBottom: 16,
+    backgroundColor: 'black',
   },
   closeButton: {
     width: 44,
@@ -525,36 +550,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   bottomControls: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
     paddingHorizontal: 20,
     paddingBottom: 40,
     paddingTop: 20,
+    backgroundColor: 'black',
   },
   modeContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginBottom: 30,
+    marginBottom: 28,
   },
   modeButton: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 22,
     paddingVertical: 8,
-    marginHorizontal: 10,
+    marginHorizontal: 4,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
   activeModeButton: {
-    borderBottomWidth: 2,
-    borderBottomColor: 'white',
+    backgroundColor: 'rgba(255,255,255,0.25)',
   },
   modeText: {
     color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '500',
   },
   activeModeText: {
     color: 'white',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   controlsContainer: {
     flexDirection: 'row',
@@ -566,32 +589,45 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
   flipButton: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  captureButtonPlaceholder: {
+    width: 80,
+    height: 80,
   },
   captureButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    borderWidth: 4,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 5,
     borderColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 10,
   },
   captureButtonInner: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: 'white',
   },
   captureButtonDisabled: {
@@ -602,12 +638,14 @@ const styles = StyleSheet.create({
   },
   recordingInner: {
     backgroundColor: '#FF3B30',
-    borderRadius: 4,
-    width: 30,
-    height: 30,
+    borderRadius: 6,
+    width: 32,
+    height: 32,
   },
   recording: {
     borderColor: '#FF3B30',
+    borderWidth: 4,
+    backgroundColor: 'rgba(255,59,48,0.2)',
   },
   recordingIndicator: {
     position: 'absolute',
@@ -661,7 +699,7 @@ const styles = StyleSheet.create({
     margin: 20,
   },
   button: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#444444',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 25,
@@ -724,5 +762,60 @@ const styles = StyleSheet.create({
   gridCellBorderLeft: {
     borderLeftWidth: 1,
     borderLeftColor: 'rgba(255, 255, 255, 0.4)',
+  },
+  viewfinderCorners: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  corner: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderColor: 'rgba(255, 255, 255, 0.85)',
+    borderWidth: 2.5,
+  },
+  cornerTL: {
+    top: 20,
+    left: 20,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+  },
+  cornerTR: {
+    top: 20,
+    right: 20,
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+  },
+  cornerBL: {
+    bottom: 20,
+    left: 20,
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+  },
+  cornerBR: {
+    bottom: 20,
+    right: 20,
+    borderLeftWidth: 0,
+    borderTopWidth: 0,
+  },
+  zoomIndicator: {
+    position: 'absolute',
+    bottom: 20,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  zoomText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

@@ -16,7 +16,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as MediaLibrary from 'expo-media-library';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 import { mediaLibraryService, authService } from '@/lib/supabase';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
@@ -43,28 +45,27 @@ export default function GalleryScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const { colors } = useAppTheme();
 
-  const getPermissionsAndLoadAssets = async () => {
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    setHasPermission(status === 'granted');
-
-    if (status === 'granted') {
-      loadMediaAssets();
-    } else {
-      setLoading(false);
-    }
+  const generateThumbnails = async (assets: MediaAsset[]) => {
+    const videoAssets = assets.filter(a => a.is_video);
+    await Promise.allSettled(
+      videoAssets.map(async (asset) => {
+        try {
+          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.file_path, {
+            time: 0,
+            quality: 0.6,
+          });
+          setThumbnails(prev => ({ ...prev, [asset.id]: uri }));
+        } catch {
+          // サムネイル生成失敗時はフォールバック表示（アイコン表示）
+        }
+      })
+    );
   };
-
-  useEffect(() => {
-    getPermissionsAndLoadAssets();
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 400,
-      useNativeDriver: true,
-    }).start();
-  }, []);
 
   const loadMediaAssets = async () => {
     try {
@@ -79,6 +80,9 @@ export default function GalleryScreen() {
 
       const mediaData = await mediaLibraryService.getUserMedia(user.id);
       setMediaAssets(mediaData || []);
+      if (mediaData) {
+        generateThumbnails(mediaData);
+      }
     } catch (error) {
       console.error('Error loading media assets:', error);
       Alert.alert('エラー', 'メディアファイルの読み込みに失敗しました。');
@@ -87,6 +91,29 @@ export default function GalleryScreen() {
       setLoading(false);
     }
   };
+
+  const getPermissionsAndLoadAssets = async () => {
+    const result = await MediaLibrary.requestPermissionsAsync();
+    // status === 'granted' または accessPrivileges が 'all'/'limited' の場合も許可済みとして扱う
+    const granted = result.granted || result.accessPrivileges === 'limited';
+    setHasPermission(granted);
+
+    if (granted) {
+      loadMediaAssets();
+    } else {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    getPermissionsAndLoadAssets();
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleSelection = (id: string) => {
     if (selectedItems.includes(id)) {
@@ -190,7 +217,7 @@ export default function GalleryScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsMultipleSelection: true,
         selectionLimit: 10,
-        quality: 0.8,
+        quality: 1.0,
       });
 
       if (!result.canceled && result.assets) {
@@ -242,18 +269,24 @@ export default function GalleryScreen() {
       >
         {item.is_video ? (
           <>
-            <Image
-              source={{ uri: item.file_path }}
-              style={styles.photoImage}
-              contentFit="cover"
-            />
+            {thumbnails[item.id] ? (
+              <Image
+                source={{ uri: thumbnails[item.id] }}
+                style={styles.photoImage}
+                contentFit="cover"
+              />
+            ) : (
+              <View style={styles.thumbnailPlaceholder}>
+                <Ionicons name="videocam-outline" size={28} color="#aaa" />
+              </View>
+            )}
             <View style={styles.videoIndicator}>
-              <Ionicons name="play" size={14} color="white" />
-              {item.duration && (
+              <Ionicons name="play" size={12} color="white" />
+              {item.duration ? (
                 <Text style={styles.durationText}>
-                  {Math.floor(item.duration / 60)}:{(item.duration % 60).toFixed(0).padStart(2, '0')}
+                  {Math.floor((item.duration ?? 0) / 60)}:{((item.duration ?? 0) % 60).toFixed(0).padStart(2, '0')}
                 </Text>
-              )}
+              ) : null}
             </View>
           </>
         ) : (
@@ -279,12 +312,12 @@ export default function GalleryScreen() {
 
   if (hasPermission === null) {
     return (
-      <View style={styles.container}>
-        <View style={styles.centerContent}>
-          <View style={styles.loadingIcon}>
-            <Ionicons name="images-outline" size={32} color="#bbb" />
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={[styles.centerContent, { backgroundColor: colors.background }]}>
+          <View style={[styles.loadingIcon, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="images-outline" size={32} color={colors.textMuted} />
           </View>
-          <Text style={styles.loadingText}>権限を確認中...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>権限を確認中...</Text>
         </View>
       </View>
     );
@@ -292,24 +325,24 @@ export default function GalleryScreen() {
 
   if (hasPermission === false) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
-            <Ionicons name="chevron-back" size={24} color="#1a1a1a" />
+            <Ionicons name="chevron-back" size={24} color="white" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>アルバム</Text>
           <View style={styles.placeholder} />
         </View>
-        <View style={styles.centerContent}>
-          <View style={styles.emptyIconContainer}>
-            <Ionicons name="images-outline" size={48} color="#bbb" />
+        <View style={[styles.centerContent, { backgroundColor: colors.background }]}>
+          <View style={[styles.emptyIconContainer, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="images-outline" size={48} color={colors.textMuted} />
           </View>
-          <Text style={styles.emptyTitle}>アクセス許可が必要です</Text>
-          <Text style={styles.emptySubtitle}>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>アクセス許可が必要です</Text>
+          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
             写真・動画を表示するには{'\n'}ギャラリーへのアクセスを許可してください
           </Text>
           <TouchableOpacity
@@ -325,7 +358,7 @@ export default function GalleryScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity
@@ -333,7 +366,7 @@ export default function GalleryScreen() {
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
-            <Ionicons name="chevron-back" size={24} color="#1a1a1a" />
+            <Ionicons name="chevron-back" size={24} color="white" />
           </TouchableOpacity>
         </View>
         <Text style={styles.headerTitle}>アルバム</Text>
@@ -345,10 +378,10 @@ export default function GalleryScreen() {
           ) : (
             <View style={styles.headerActions}>
               <TouchableOpacity style={styles.addButton} onPress={addFromLibrary} activeOpacity={0.7}>
-                <Ionicons name="add" size={22} color="#1a1a1a" />
+                <Ionicons name="add" size={22} color="white" />
               </TouchableOpacity>
               <TouchableOpacity style={styles.refreshButton} onPress={loadMediaAssets} activeOpacity={0.7}>
-                <Ionicons name="sync-outline" size={22} color="#1a1a1a" />
+                <Ionicons name="sync-outline" size={22} color="white" />
               </TouchableOpacity>
             </View>
           )}
@@ -356,19 +389,19 @@ export default function GalleryScreen() {
       </View>
 
       {loading ? (
-        <View style={styles.centerContent}>
-          <View style={styles.loadingIcon}>
-            <Ionicons name="images-outline" size={32} color="#bbb" />
+        <View style={[styles.centerContent, { backgroundColor: colors.background }]}>
+          <View style={[styles.loadingIcon, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="images-outline" size={32} color={colors.textMuted} />
           </View>
-          <Text style={styles.loadingText}>読み込み中...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>読み込み中...</Text>
         </View>
       ) : mediaAssets.length === 0 ? (
-        <View style={styles.centerContent}>
-          <View style={styles.emptyIconContainer}>
-            <Ionicons name="camera-outline" size={48} color="#bbb" />
+        <View style={[styles.centerContent, { backgroundColor: colors.background }]}>
+          <View style={[styles.emptyIconContainer, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="camera-outline" size={48} color={colors.textMuted} />
           </View>
-          <Text style={styles.emptyTitle}>写真・動画がありません</Text>
-          <Text style={styles.emptySubtitle}>カメラで撮影して追加しましょう</Text>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>写真・動画がありません</Text>
+          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>カメラで撮影して追加しましょう</Text>
         </View>
       ) : (
         <Animated.View style={[styles.gridContainer, { opacity: fadeAnim }]}>
@@ -377,14 +410,14 @@ export default function GalleryScreen() {
             renderItem={renderMediaItem}
             keyExtractor={(item) => item.id}
             numColumns={numColumns}
-            contentContainerStyle={styles.gridContent}
+            contentContainerStyle={[styles.gridContent, { backgroundColor: colors.background }]}
             showsVerticalScrollIndicator={false}
             columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
           />
 
           {selectionMode && selectedItems.length > 0 && (
-            <View style={styles.selectionBar}>
-              <Text style={styles.selectionCount}>
+            <View style={[styles.selectionBar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+              <Text style={[styles.selectionCount, { color: colors.text }]}>
                 {selectedItems.length}個選択中
               </Text>
               <View style={styles.actionButtons}>
@@ -417,9 +450,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     paddingTop: Platform.OS === 'ios' ? 60 : (StatusBar.currentHeight || 0) + 12,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    backgroundColor: '#444444',
   },
   backButton: {
     width: 40,
@@ -433,8 +464,8 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 17,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '700',
+    color: 'white',
     flex: 1,
     textAlign: 'center',
   },
@@ -453,7 +484,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderRadius: 20,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'rgba(255,255,255,0.2)',
   },
   refreshButton: {
     width: 40,
@@ -470,58 +501,64 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 40,
+    backgroundColor: '#fafafa',
   },
   loadingIcon: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#fff',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 4,
   },
   loadingText: {
     fontSize: 15,
-    color: '#888',
+    color: '#666666',
     textAlign: 'center',
   },
   emptyIconContainer: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#fff',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 24,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
     elevation: 4,
   },
   emptyTitle: {
     fontSize: 20,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '700',
+    color: '#444444',
     marginBottom: 8,
   },
   emptySubtitle: {
     fontSize: 15,
-    color: '#888',
+    color: '#666666',
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   permissionButton: {
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#444444',
     paddingHorizontal: 24,
     paddingVertical: 14,
-    borderRadius: 12,
+    borderRadius: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 4,
   },
   permissionButtonText: {
     color: '#fff',
@@ -533,7 +570,7 @@ const styles = StyleSheet.create({
   },
   gridContent: {
     paddingTop: 2,
-    backgroundColor: '#fff',
+    backgroundColor: '#fafafa',
     paddingBottom: 100,
   },
   row: {
@@ -545,23 +582,32 @@ const styles = StyleSheet.create({
     margin: 1,
     position: 'relative',
     backgroundColor: '#f5f5f5',
+    borderRadius: 2,
+    overflow: 'hidden',
   },
   photoImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#f5f5f5',
   },
+  thumbnailPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f5f5f5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   cancelButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
   cancelButtonText: {
-    color: '#888',
+    color: 'rgba(255,255,255,0.9)',
     fontSize: 15,
     fontWeight: '600',
   },
   selectedItem: {
-    opacity: 0.85,
+    opacity: 0.8,
   },
   selectionOverlay: {
     position: 'absolute',
@@ -572,15 +618,15 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
     borderWidth: 2,
     borderColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
   },
   selectedCircle: {
-    backgroundColor: '#1a1a1a',
-    borderColor: '#1a1a1a',
+    backgroundColor: '#444444',
+    borderColor: '#444444',
   },
   selectionNumber: {
     color: 'white',
@@ -591,7 +637,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 8,
     right: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
     borderRadius: 10,
     paddingHorizontal: 6,
     paddingVertical: 3,
@@ -609,7 +655,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -617,7 +663,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingBottom: Platform.OS === 'ios' ? 34 : 16,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: '#e5e5e5',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.06,
@@ -625,7 +671,7 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   selectionCount: {
-    color: '#1a1a1a',
+    color: '#444444',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -638,7 +684,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF3B30',
     paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -649,10 +695,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   createPostButton: {
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#444444',
     paddingHorizontal: 18,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,

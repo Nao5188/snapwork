@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -14,12 +14,15 @@ import {
   Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Video, ResizeMode } from 'expo-av';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
 import SkeletonLoader from './SkeletonLoader';
+import { useAppTheme } from '@/lib/ThemeContext';
 
 const { width } = Dimensions.get('window');
+const CARD_MEDIA_HEIGHT = width * 1.2;
 
 interface MediaItem {
   id: string;
@@ -56,6 +59,7 @@ interface PostCardProps {
   onPress?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
+  onDownload?: () => void;
   onLike?: () => void;
   showActions?: boolean;
   showProfile?: boolean;
@@ -73,16 +77,14 @@ const getRelativeTime = (date: Date): string => {
   } else if (diffInSeconds < 86400) {
     const hours = Math.floor(diffInSeconds / 3600);
     return `${hours}時間前`;
-  } else if (diffInSeconds < 604800) {
-    const days = Math.floor(diffInSeconds / 86400);
-    return `${days}日前`;
-  } else if (diffInSeconds < 2592000) {
-    const weeks = Math.floor(diffInSeconds / 604800);
-    return `${weeks}週間前`;
   } else {
+    const year = date.getFullYear();
     const month = date.getMonth() + 1;
     const day = date.getDate();
-    return `${month}月${day}日`;
+    if (year === now.getFullYear()) {
+      return `${month}月${day}日`;
+    }
+    return `${year}年${month}月${day}日`;
   }
 };
 
@@ -92,19 +94,21 @@ export default function PostCard({
   onPress,
   onEdit,
   onDelete,
+  onDownload,
   onLike,
   showActions = false,
   showProfile = true
 }: PostCardProps) {
   const [isLiked, setIsLiked] = useState(post.isLiked || false);
-  const [likesCount, setLikesCount] = useState(post.likesCount || 0);
   const [showHeartAnimation, setShowHeartAnimation] = useState(false);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
   const [imageLoading, setImageLoading] = useState<Set<string>>(new Set(['initial']));
+  const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  const [videoThumbnails, setVideoThumbnails] = useState<{ [id: string]: string }>({});
   const [reduceMotion, setReduceMotion] = useState(false);
+  const { colors } = useAppTheme();
   const heartScale = useRef(new Animated.Value(0)).current;
-  const heartRotation = useRef(new Animated.Value(0)).current;
   const lastTap = useRef<number>(0);
 
   // 控えめなスライドインアニメーション
@@ -119,6 +123,16 @@ export default function PostCard({
     // reduceMotion設定を確認
     AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
   }, []);
+
+  const generateThumbnail = useCallback(async (id: string, uri: string) => {
+    if (videoThumbnails[id]) return;
+    try {
+      const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 0 });
+      setVideoThumbnails(prev => ({ ...prev, [id]: thumbUri }));
+    } catch {
+      // サムネイル生成失敗は無視
+    }
+  }, [videoThumbnails]);
 
   useEffect(() => {
     if (reduceMotion) {
@@ -144,6 +158,7 @@ export default function PostCard({
         useNativeDriver: true,
       }),
     ]).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduceMotion]);
 
   const handleImageError = (mediaId: string) => {
@@ -165,16 +180,10 @@ export default function PostCard({
     });
   };
 
-  const canEdit = () => {
-    const now = Date.now();
-    const postTime = post.createdAt.getTime();
-    const daysSincePost = (now - postTime) / (1000 * 60 * 60 * 24);
-    return daysSincePost <= 30;
-  };
 
-  const getMediaItems = (): MediaItem[] => {
+  const mediaItems = useMemo((): MediaItem[] => {
     if (post.mediaItems && post.mediaItems.length > 0) {
-      const sortedItems = post.mediaItems.sort((a: any, b: any) =>
+      const sortedItems = [...post.mediaItems].sort((a: any, b: any) =>
         (a.displayOrder || a.display_order || 0) - (b.displayOrder || b.display_order || 0)
       );
       const mappedItems = sortedItems.map((item: any) => ({
@@ -199,9 +208,10 @@ export default function PostCard({
       }];
     }
     return [];
-  };
+  }, [post.mediaItems, post.mediaUri, post.isVideo]);
 
-  const mediaItems = getMediaItems();
+  const singleItem = mediaItems.length === 1 ? mediaItems[0] : null;
+  const isSingleVideoPlaying = singleItem ? playingVideoId === singleItem.id : false;
 
   const getAvatarSource = () => {
     if (post.userProfile?.avatar_url &&
@@ -298,76 +308,119 @@ export default function PostCard({
     }
 
     setIsLiked(!isLiked);
-    setLikesCount(prev => isLiked ? prev - 1 : prev + 1);
     onLike?.();
   };
 
   const handleScroll = (event: any) => {
     const offsetX = event.nativeEvent.contentOffset.x;
-    const mediaWidth = width - 32;
-    const index = Math.round(offsetX / mediaWidth);
+    const index = Math.round(offsetX / width);
     setCurrentMediaIndex(index);
   };
 
   const handleMorePress = () => {
     if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ['キャンセル', '編集', '削除'],
-          destructiveButtonIndex: 2,
-          cancelButtonIndex: 0,
-        },
-        (buttonIndex) => {
-          if (buttonIndex === 1) {
-            onEdit?.();
-          } else if (buttonIndex === 2) {
-            onDelete?.();
+      if (showActions && onDownload) {
+        ActionSheetIOS.showActionSheetWithOptions(
+          { options: ['キャンセル', '保存', '編集', '削除'], destructiveButtonIndex: 3, cancelButtonIndex: 0 },
+          (buttonIndex) => {
+            if (buttonIndex === 1) onDownload?.();
+            else if (buttonIndex === 2) onEdit?.();
+            else if (buttonIndex === 3) onDelete?.();
           }
-        }
-      );
+        );
+      } else if (showActions) {
+        ActionSheetIOS.showActionSheetWithOptions(
+          { options: ['キャンセル', '編集', '削除'], destructiveButtonIndex: 2, cancelButtonIndex: 0 },
+          (buttonIndex) => {
+            if (buttonIndex === 1) onEdit?.();
+            else if (buttonIndex === 2) onDelete?.();
+          }
+        );
+      } else if (onDownload) {
+        ActionSheetIOS.showActionSheetWithOptions(
+          { options: ['キャンセル', '保存'], cancelButtonIndex: 0 },
+          (buttonIndex) => {
+            if (buttonIndex === 1) onDownload?.();
+          }
+        );
+      }
     } else {
-      Alert.alert(
-        '操作を選択',
-        '',
-        [
+      const buttons: any[] = [
+        ...(onDownload ? [{ text: '保存', onPress: () => onDownload() }] : []),
+        ...(showActions ? [
           { text: '編集', onPress: () => onEdit?.() },
           { text: '削除', style: 'destructive', onPress: () => onDelete?.() },
-          { text: 'キャンセル', style: 'cancel' },
-        ]
-      );
+        ] : []),
+        { text: 'キャンセル', style: 'cancel' },
+      ];
+      Alert.alert('操作を選択', '', buttons);
     }
   };
 
-  const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => (
-    <Pressable style={styles.mediaItem} onPress={handleDoubleTap}>
-      {imageErrors.has(item.id) ? (
-        <View style={styles.imagePlaceholder}>
-          <Ionicons name="image-outline" size={48} color="#ccc" />
-          <Text style={styles.placeholderText}>画像を読み込めません</Text>
-        </View>
-      ) : (
-        <>
-          {imageLoading.has(item.id) && (
-            <View style={styles.skeletonContainer}>
-              <SkeletonLoader width="100%" height={width} borderRadius={0} />
-            </View>
-          )}
-          <Image
-            source={{ uri: item.mediaUrl }}
-            style={[styles.mediaImage, imageLoading.has(item.id) && { opacity: 0 }]}
-            contentFit="cover"
-            onError={() => handleImageError(item.id)}
-            onLoad={() => handleImageLoad(item.id)}
-          />
-        </>
-      )}
-      {item.isVideo && !imageErrors.has(item.id) && (
-        <View style={styles.videoPlayButton}>
-          <Ionicons name="play" size={32} color="white" />
-        </View>
-      )}
-    </Pressable>
-  );
+  const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => {
+    const isPlaying = playingVideoId === item.id;
+    return (
+      <Pressable
+        style={styles.mediaItem}
+        onPress={item.isVideo
+          ? () => setPlayingVideoId(isPlaying ? null : item.id)
+          : handleDoubleTap
+        }
+      >
+        {item.isVideo ? (
+          isPlaying ? (
+            <Video
+              source={{ uri: item.mediaUrl }}
+              style={styles.mediaImage}
+              resizeMode={ResizeMode.COVER}
+              shouldPlay
+              isMuted={false}
+              useNativeControls
+              onPlaybackStatusUpdate={(status: any) => {
+                if (status.isLoaded && status.didJustFinish) {
+                  setPlayingVideoId(null);
+                }
+              }}
+            />
+          ) : (
+            <Image
+              source={videoThumbnails[item.id]
+                ? { uri: videoThumbnails[item.id] }
+                : undefined}
+              style={styles.mediaImage}
+              contentFit="cover"
+              onLayout={() => generateThumbnail(item.id, item.mediaUrl)}
+            />
+          )
+        ) : imageErrors.has(item.id) ? (
+          <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="image-outline" size={48} color={colors.textMuted} />
+            <Text style={[styles.placeholderText, { color: colors.textMuted }]}>画像を読み込めません</Text>
+          </View>
+        ) : (
+          <>
+            {imageLoading.has(item.id) && (
+              <View style={styles.skeletonContainer}>
+                <SkeletonLoader width="100%" height={CARD_MEDIA_HEIGHT} borderRadius={0} />
+              </View>
+            )}
+            <Image
+              source={{ uri: item.mediaUrl }}
+              style={[styles.mediaImage, imageLoading.has(item.id) && { opacity: 0 }]}
+              contentFit="cover"
+              onError={() => handleImageError(item.id)}
+              onLoad={() => handleImageLoad(item.id)}
+            />
+          </>
+        )}
+        {item.isVideo && !isPlaying && (
+          <View style={styles.videoPlayButton}>
+            <Ionicons name="play" size={32} color="white" />
+          </View>
+        )}
+      </Pressable>
+    );
+  };
 
   const renderDotIndicators = () => {
     if (mediaItems.length <= 1) return null;
@@ -394,63 +447,99 @@ export default function PostCard({
         {
           opacity: fadeAnim,
           transform: [{ translateY: slideAnim }],
+          backgroundColor: colors.surface,
         },
       ]}
     >
       {/* Profile Header */}
-      {showProfile && post.userProfile && (
-        <View style={styles.profileHeader}>
-          <TouchableOpacity style={styles.profileLeft} activeOpacity={0.7}>
-            <View style={styles.avatarContainer}>
-              {getAvatarSource() ? (
-                <Image
-                  source={getAvatarSource()}
-                  style={styles.avatar}
-                  contentFit="cover"
-                />
-              ) : (
-                <View style={styles.defaultAvatar}>
-                  <Ionicons name="person" size={20} color="#999" />
-                </View>
-              )}
-            </View>
-            <View style={styles.profileInfo}>
-              <Text style={styles.displayName}>{post.userProfile.display_name}</Text>
-            </View>
-          </TouchableOpacity>
+      {(showProfile && post.userProfile) || showActions ? (
+        <View style={[styles.profileHeader, { backgroundColor: colors.surface }]}>
+          {showProfile && post.userProfile ? (
+            <TouchableOpacity style={styles.profileLeft} activeOpacity={0.7}>
+              <View style={[styles.avatarContainer, { borderColor: colors.borderLight }]}>
+                {getAvatarSource() ? (
+                  <Image
+                    source={getAvatarSource()}
+                    style={styles.avatar}
+                    contentFit="cover"
+                  />
+                ) : (
+                  <View style={[styles.defaultAvatar, { backgroundColor: colors.surface2 }]}>
+                    <Ionicons name="person" size={20} color={colors.textMuted} />
+                  </View>
+                )}
+              </View>
+              <View style={styles.profileInfo}>
+                <Text style={[styles.displayName, { color: colors.text }]}>{post.userProfile.display_name}</Text>
+              </View>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.profileLeft} />
+          )}
 
-          {showActions && canEdit() && (
+          {(showActions || onDownload) && (
             <TouchableOpacity
               style={styles.moreButton}
               activeOpacity={0.7}
               onPress={handleMorePress}
             >
-              <Ionicons name="ellipsis-horizontal" size={24} color="#1a1a1a" />
+              <Ionicons name="ellipsis-horizontal" size={24} color={colors.text} />
             </TouchableOpacity>
           )}
         </View>
-      )}
+      ) : null}
 
       {/* Media */}
-      <View style={styles.mediaContainer}>
+      <View style={[styles.mediaContainer, { backgroundColor: colors.surface2 }]}>
         {mediaItems.length > 0 ? (
           <>
-            {mediaItems.length === 1 ? (
-              <Pressable style={styles.singleMediaWrapper} onPress={handleDoubleTap}>
-                {imageErrors.has(mediaItems[0].id) ? (
-                  <View style={styles.imagePlaceholder}>
-                    <Ionicons name="image-outline" size={48} color="#ccc" />
-                    <Text style={styles.placeholderText}>画像を読み込めません</Text>
+            {mediaItems.length === 1 && singleItem ? (
+              <Pressable
+                style={styles.singleMediaWrapper}
+                onPress={singleItem.isVideo
+                  ? () => setPlayingVideoId(isSingleVideoPlaying ? null : singleItem.id)
+                  : handleDoubleTap
+                }
+              >
+                {singleItem.isVideo ? (
+                  isSingleVideoPlaying ? (
+                    <Video
+                      source={{ uri: singleItem.mediaUrl }}
+                      style={styles.singleMediaImage}
+                      resizeMode={ResizeMode.COVER}
+                      shouldPlay
+                      isMuted={false}
+                      useNativeControls
+                      onPlaybackStatusUpdate={(status: any) => {
+                        if (status.isLoaded && status.didJustFinish) {
+                          setPlayingVideoId(null);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <Image
+                      source={videoThumbnails[singleItem.id]
+                        ? { uri: videoThumbnails[singleItem.id] }
+                        : undefined}
+                      style={styles.singleMediaImage}
+                      contentFit="cover"
+                      onLayout={() => generateThumbnail(singleItem.id, singleItem.mediaUrl)}
+                    />
+                  )
+                ) : imageErrors.has(singleItem.id) ? (
+                  <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
+                    <Ionicons name="image-outline" size={48} color={colors.textMuted} />
+                    <Text style={[styles.placeholderText, { color: colors.textMuted }]}>画像を読み込めません</Text>
                   </View>
                 ) : (
                   <Image
-                    source={{ uri: mediaItems[0].mediaUrl }}
+                    source={{ uri: singleItem.mediaUrl }}
                     style={styles.singleMediaImage}
                     contentFit="cover"
-                    onError={() => handleImageError(mediaItems[0].id)}
+                    onError={() => handleImageError(singleItem.id)}
                   />
                 )}
-                {mediaItems[0].isVideo && !imageErrors.has(mediaItems[0].id) && (
+                {singleItem.isVideo && !isSingleVideoPlaying && (
                   <View style={styles.videoPlayButton}>
                     <Ionicons name="play" size={32} color="white" />
                   </View>
@@ -463,7 +552,7 @@ export default function PostCard({
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                snapToInterval={width - 32}
+                snapToInterval={width}
                 decelerationRate="fast"
                 onScroll={handleScroll}
                 scrollEventThrottle={16}
@@ -485,40 +574,35 @@ export default function PostCard({
             {renderDotIndicators()}
           </>
         ) : (
-          <View style={styles.noMediaContainer}>
-            <Ionicons name="image-outline" size={48} color="#ccc" />
-            <Text style={styles.noMediaText}>画像なし</Text>
+          <View style={[styles.noMediaContainer, { backgroundColor: colors.surface2 }]}>
+            <Ionicons name="image-outline" size={48} color={colors.textMuted} />
+            <Text style={[styles.noMediaText, { color: colors.textMuted }]}>画像なし</Text>
           </View>
         )}
       </View>
 
       {/* Post Info Card */}
-      <View style={styles.postInfoCard}>
+      <View style={[styles.postInfoCard, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+        {/* Title */}
+        {post.title && (
+          <Text style={[styles.postTitle, { color: colors.text }]}>{post.title}</Text>
+        )}
+
         {/* Categories */}
         {post.description && (
           <View style={styles.categoriesContainer}>
             {post.description.split(',').map((category, index) => (
-              <View key={index} style={styles.categoryButton}>
-                <Text style={styles.categoryButtonText}>{category.trim()}</Text>
+              <View key={index} style={[styles.categoryButton, { backgroundColor: colors.surface2 }]}>
+                <Text style={[styles.categoryButtonText, { color: colors.textSecondary }]}>{category.trim()}</Text>
               </View>
             ))}
           </View>
         )}
 
-        {/* Title */}
-        {post.title && (
-          <Text style={styles.postTitle}>{post.title}</Text>
-        )}
-
-        {/* Menu Name */}
-        {post.menuName && (
-          <Text style={styles.menuName}>{post.menuName}</Text>
-        )}
-
         {/* Timestamp */}
         <View style={styles.timestampContainer}>
-          <Ionicons name="time-outline" size={13} color="#aaa" />
-          <Text style={styles.timestamp}>{getRelativeTime(post.createdAt)}</Text>
+          <Ionicons name="time-outline" size={13} color={colors.textMuted} />
+          <Text style={[styles.timestamp, { color: colors.textMuted }]}>{getRelativeTime(post.createdAt)}</Text>
         </View>
       </View>
     </Animated.View>
@@ -527,13 +611,13 @@ export default function PostCard({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     marginBottom: 16,
     marginHorizontal: 0,
     borderRadius: 0,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
   },
@@ -561,14 +645,16 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    marginRight: 12,
+    marginRight: 10,
     overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#f5f5f5',
   },
   avatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
   },
   defaultAvatar: {
     width: 40,
@@ -582,22 +668,22 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   displayName: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#1a1a1a',
-    letterSpacing: -0.3,
+    color: '#444444',
+    letterSpacing: -0.2,
   },
   moreButton: {
-    padding: 12,
+    padding: 8,
     marginRight: -4,
   },
   mediaContainer: {
-    width: width - 32,
-    height: width - 32,
+    width: width,
+    height: CARD_MEDIA_HEIGHT,
     position: 'relative',
-    backgroundColor: '#f5f5f5',
-    marginHorizontal: 16,
-    borderRadius: 8,
+    backgroundColor: '#fafafa',
+    marginHorizontal: 0,
+    borderRadius: 0,
     overflow: 'hidden',
   },
   singleMediaWrapper: {
@@ -608,21 +694,21 @@ const styles = StyleSheet.create({
   singleMediaImage: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
   },
   mediaList: {
     width: '100%',
     height: '100%',
   },
   mediaItem: {
-    width: width - 32,
-    height: width - 32,
+    width: width,
+    height: CARD_MEDIA_HEIGHT,
     position: 'relative',
   },
   mediaImage: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
   },
   videoPlayButton: {
     position: 'absolute',
@@ -630,7 +716,7 @@ const styles = StyleSheet.create({
     left: '50%',
     marginTop: -28,
     marginLeft: -28,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
     borderRadius: 28,
     width: 56,
     height: 56,
@@ -646,7 +732,7 @@ const styles = StyleSheet.create({
   },
   dotContainer: {
     position: 'absolute',
-    bottom: 16,
+    bottom: 14,
     width: '100%',
     flexDirection: 'row',
     justifyContent: 'center',
@@ -668,71 +754,59 @@ const styles = StyleSheet.create({
   noMediaContainer: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
     justifyContent: 'center',
     alignItems: 'center',
   },
   noMediaText: {
-    color: '#888',
+    color: '#999999',
     fontSize: 14,
     marginTop: 8,
   },
   imagePlaceholder: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
   },
   placeholderText: {
-    color: '#999',
+    color: '#999999',
     fontSize: 13,
     marginTop: 8,
   },
   postInfoCard: {
-    backgroundColor: '#fff',
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 16,
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 0,
     paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderRadius: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 1,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
   },
   categoriesContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
+    gap: 6,
+    marginBottom: 8,
   },
   categoryButton: {
-    backgroundColor: '#F3E8FF',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 16,
+    backgroundColor: '#f5f5f5',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 20,
   },
   categoryButtonText: {
-    fontSize: 13,
-    color: '#5B21B6',
+    fontSize: 12,
+    color: '#444444',
     fontWeight: '600',
   },
   postTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#1a1a1a',
+    color: '#444444',
     marginBottom: 8,
     letterSpacing: -0.3,
     lineHeight: 22,
-  },
-  menuName: {
-    fontSize: 14,
-    color: '#777',
-    marginBottom: 12,
-    lineHeight: 20,
   },
   timestampContainer: {
     flexDirection: 'row',
@@ -741,6 +815,6 @@ const styles = StyleSheet.create({
   },
   timestamp: {
     fontSize: 12,
-    color: '#aaa',
+    color: '#999999',
   },
 });
