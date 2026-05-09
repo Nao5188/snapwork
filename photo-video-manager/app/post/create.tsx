@@ -83,7 +83,7 @@ export default function CreatePostScreen() {
     }
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     const trimmed = newCategoryName.trim();
     if (!trimmed) {
       Alert.alert('エラー', 'カテゴリ名を入力してください。');
@@ -94,7 +94,7 @@ export default function CreatePostScreen() {
       Alert.alert('エラー', 'このカテゴリは既に存在します。');
       return;
     }
-    saveCustomCategory(trimmed);
+    await saveCustomCategory(trimmed);
     setSelectedCategories(prev => [...prev, trimmed]);
     setNewCategoryName('');
     setShowAddCategoryModal(false);
@@ -152,8 +152,13 @@ export default function CreatePostScreen() {
       setMediaItems([newMediaItem]);
     } else if (params.selectedMedia) {
       const selectedUris = (params.selectedMedia as string).split(',');
+      const mediaTypesParam = params.mediaTypes ? (params.mediaTypes as string).split(',') : [];
       const newMediaItems: MediaItem[] = selectedUris.map((uri, index) => {
-        const isVideo = uri.includes('.mp4') || uri.includes('.mov') || uri.includes('.avi');
+        // mediaTypesパラメータがあればそれを優先、なければ拡張子で判定（大文字小文字不問）
+        const typeFromParam = mediaTypesParam[index];
+        const lowerUri = uri.toLowerCase();
+        const isVideo = typeFromParam === 'video' ||
+          lowerUri.includes('.mp4') || lowerUri.includes('.mov') || lowerUri.includes('.avi');
         return {
           id: `selected_${Date.now()}_${index}`,
           uri: decodeURIComponent(uri),

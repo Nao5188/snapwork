@@ -38,3 +38,17 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
+
+# Claude Code local settings
+.claude/
+
+# Internal documents
+FIXES_SUMMARY.md
+PROJECT_STATUS_REPORT.md
+TASK.md
+TODO.md
+VERIFICATION_REPORT.md
+CLAUDE.md
+SETUP_GUIDE.md
+デザイン.md
+FB/

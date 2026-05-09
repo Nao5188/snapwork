@@ -3,9 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storageService as localStorageService } from './storage';
 
 // Supabase設定
-// 本番環境では環境変数を使用してください
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+
+if (__DEV__ && (!supabaseUrl || !supabaseAnonKey)) {
+  console.error('[Supabase] 環境変数が設定されていません。.envファイルにEXPO_PUBLIC_SUPABASE_URLとEXPO_PUBLIC_SUPABASE_ANON_KEYを設定してください。');
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -282,15 +285,15 @@ export const userService = {
       .from('users')
       .select('id')
       .eq('username', username);
-    
+
     if (excludeUserId) {
       query = query.neq('id', excludeUserId);
     }
-    
+
     const { data, error } = await query;
-    
+
     if (error) throw error;
-    return data.length === 0;
+    return (data ?? []).length === 0;
   },
 
   // 表示名の重複チェック
@@ -299,15 +302,15 @@ export const userService = {
       .from('users')
       .select('id')
       .eq('display_name', displayName);
-    
+
     if (excludeUserId) {
       query = query.neq('id', excludeUserId);
     }
-    
+
     const { data, error } = await query;
-    
+
     if (error) throw error;
-    return data.length === 0;
+    return (data ?? []).length === 0;
   },
 
   // 欠落しているユーザープロフィールを作成（通常のアプリ内では使用しない）

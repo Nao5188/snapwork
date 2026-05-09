@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
 import { postService, authService, supabase, userService } from '@/lib/supabase';
@@ -55,6 +55,7 @@ interface PostHistoryItem {
 
 export default function HistoryScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const [posts, setPosts] = useState<PostHistoryItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -62,6 +63,12 @@ export default function HistoryScreen() {
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [drawerVisible, setDrawerVisible] = useState(false);
   const { colors, isDark } = useAppTheme();
+
+  const flatListRef = useRef<FlatList>(null);
+
+  const scrollToTop = useCallback(() => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }, []);
 
   // アニメーション
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -74,6 +81,13 @@ export default function HistoryScreen() {
     }).start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('tabPress' as any, () => {
+      scrollToTop();
+    });
+    return unsubscribe;
+  }, [navigation, scrollToTop]);
 
   const loadPosts = useCallback(async () => {
     try {
@@ -144,10 +158,14 @@ export default function HistoryScreen() {
 
           // post.media_url が有効な場合のみ追加
           if (post.media_url && post.media_url.trim() !== '') {
+            // is_videoが未設定の場合はURLの拡張子で判定（過去データの救済）
+            const lowerUrl = post.media_url.toLowerCase();
+            const isVideoByUrl = lowerUrl.includes('.mp4') || lowerUrl.includes('.mov') ||
+              lowerUrl.includes('.avi') || lowerUrl.includes('.webm');
             mediaItems.push({
               id: 'media_0',
               media_url: post.media_url,
-              is_video: post.is_video,
+              is_video: post.is_video || isVideoByUrl,
               display_order: 0,
             });
           }
@@ -279,11 +297,10 @@ export default function HistoryScreen() {
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除する', style: 'destructive', onPress: async () => {
           try {
-            setPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
             await postService.deletePost(post.id);
+            setPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
             Alert.alert('完了', '投稿を削除しました。');
           } catch (error: any) {
-            loadPosts();
             Alert.alert(
               'エラー',
               `削除に失敗しました。\n${error?.message || 'もう一度お試しください。'}`
@@ -541,11 +558,13 @@ export default function HistoryScreen() {
       >
         <Ionicons name="menu" size={26} color={colors.text} />
       </TouchableOpacity>
-      <Text style={[styles.headerTitle, { color: colors.text }]}>みんなの投稿</Text>
+      <TouchableOpacity onPress={scrollToTop} activeOpacity={0.7} style={styles.headerTitleButton}>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>みんなの投稿</Text>
+      </TouchableOpacity>
       <RNImage
-        source={require('@/assets/images/SalonCloudLogo.png')}
+        source={require('@/assets/images/HCINCLogo.png')}
         style={styles.headerLogo}
-        resizeMode="contain"
+        resizeMode="cover"
       />
     </View>
   );
@@ -562,6 +581,7 @@ export default function HistoryScreen() {
           renderSkeletons()
         ) : (
           <FlatList
+            ref={flatListRef}
             data={posts}
             renderItem={renderPostItem}
             keyExtractor={(item) => item.id}
@@ -605,15 +625,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 10,
   },
-  headerTitle: {
+  headerTitleButton: {
     flex: 1,
+    alignItems: 'center',
+  },
+  headerTitle: {
     textAlign: 'center',
     fontSize: 17,
     fontWeight: '700',
   },
   headerLogo: {
-    width: 36,
-    height: 36,
+    width: 30,
+    height: 30,
     borderRadius: 8,
   },
   content: {

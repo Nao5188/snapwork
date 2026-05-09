@@ -10,10 +10,12 @@ import {
   Platform,
   StatusBar,
   Animated,
+  Linking,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
@@ -54,9 +56,15 @@ export default function GalleryScreen() {
     const videoAssets = assets.filter(a => a.is_video);
     await Promise.allSettled(
       videoAssets.map(async (asset) => {
+        const fileUri = asset.file_path.split('#')[0];
+
+        // ph:// URIはexpo-imageがPhotosフレームワーク経由で直接表示できるためスキップ
+        if (fileUri.startsWith('ph://')) return;
+
+        // アプリサンドボックス内のfile://のみexpo-video-thumbnailsで処理
         try {
-          const { uri } = await VideoThumbnails.getThumbnailAsync(asset.file_path, {
-            time: 0,
+          const { uri } = await VideoThumbnails.getThumbnailAsync(fileUri, {
+            time: 1000,
             quality: 0.6,
           });
           setThumbnails(prev => ({ ...prev, [asset.id]: uri }));
@@ -100,6 +108,17 @@ export default function GalleryScreen() {
 
     if (granted) {
       loadMediaAssets();
+    } else if (!result.canAskAgain) {
+      // 一度拒否されて再度ダイアログを出せない場合は設定アプリへ誘導
+      Alert.alert(
+        'アクセス許可が必要です',
+        '設定アプリからSnapWorkの写真アクセスを許可してください。',
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          { text: '設定を開く', onPress: () => Linking.openSettings() },
+        ]
+      );
+      setLoading(false);
     } else {
       setLoading(false);
     }
@@ -153,7 +172,8 @@ export default function GalleryScreen() {
               const first5Items = selectedItems.slice(0, 5);
               const selectedAssets = mediaAssets.filter(asset => first5Items.includes(asset.id));
               const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
-              router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}`);
+              const mediaTypes = selectedAssets.map(asset => asset.is_video ? 'video' : 'photo').join(',');
+              router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}&mediaTypes=${mediaTypes}`);
             },
           },
         ]
@@ -163,8 +183,9 @@ export default function GalleryScreen() {
 
     const selectedAssets = mediaAssets.filter(asset => selectedItems.includes(asset.id));
     const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
+    const mediaTypes = selectedAssets.map(asset => asset.is_video ? 'video' : 'photo').join(',');
 
-    router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}`);
+    router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}&mediaTypes=${mediaTypes}`);
   };
 
   const handleDeleteMedia = async () => {
@@ -232,16 +253,23 @@ export default function GalleryScreen() {
           const now = new Date();
           const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
           const isVideo = asset.type === 'video';
-          const filename = `imported_${isVideo ? 'video' : 'photo'}_${timestamp}.${isVideo ? 'mp4' : 'jpg'}`;
+          const ext = isVideo ? 'mov' : 'jpg';
+          const filename = `imported_${isVideo ? 'video' : 'photo'}_${timestamp}.${ext}`;
+
+          // Documentsディレクトリにコピー（fetch/サムネイル生成が常にアクセス可能）
+          const destDir = `${FileSystem.documentDirectory}media/`;
+          await FileSystem.makeDirectoryAsync(destDir, { intermediates: true });
+          const persistentUri = `${destDir}${filename}`;
+          await FileSystem.copyAsync({ from: asset.uri, to: persistentUri });
 
           await mediaLibraryService.addMedia({
             user_id: user.id,
             filename: filename,
-            file_path: asset.uri,
+            file_path: persistentUri,
             file_size: asset.fileSize,
             mime_type: isVideo ? 'video/mp4' : 'image/jpeg',
             is_video: isVideo,
-            duration: asset.duration || undefined,
+            duration: asset.duration ? Math.round(asset.duration / 1000) : undefined,
             width: asset.width,
             height: asset.height,
           });
@@ -269,7 +297,14 @@ export default function GalleryScreen() {
       >
         {item.is_video ? (
           <>
-            {thumbnails[item.id] ? (
+            {item.file_path.startsWith('ph://') ? (
+              // ph:// URIはexpo-imageがPhotosフレームワーク経由でサムネイルを自動生成
+              <Image
+                source={{ uri: item.file_path.split('#')[0] }}
+                style={styles.photoImage}
+                contentFit="cover"
+              />
+            ) : thumbnails[item.id] ? (
               <Image
                 source={{ uri: thumbnails[item.id] }}
                 style={styles.photoImage}

@@ -1,9 +1,11 @@
 type ActionCallback = () => void;
 type RecordingListener = (isRecording: boolean) => void;
+type ExposureListener = () => void;
 
 let _action: ActionCallback | null = null;
 let _isRecording = false;
 let _listeners: RecordingListener[] = [];
+let _exposureListeners: ExposureListener[] = [];
 
 export const cameraCaptureService = {
   register(fn: ActionCallback) {
@@ -27,5 +29,14 @@ export const cameraCaptureService = {
   },
   get isRecording() {
     return _isRecording;
+  },
+  triggerShowExposure() {
+    _exposureListeners.forEach(l => l());
+  },
+  subscribeShowExposure(fn: ExposureListener) {
+    _exposureListeners.push(fn);
+    return () => {
+      _exposureListeners = _exposureListeners.filter(l => l !== fn);
+    };
   },
 };

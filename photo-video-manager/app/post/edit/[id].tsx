@@ -80,7 +80,7 @@ export default function EditPostScreen() {
     }
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     const trimmed = newCategoryName.trim();
     if (!trimmed) {
       Alert.alert('エラー', 'カテゴリ名を入力してください。');
@@ -91,7 +91,7 @@ export default function EditPostScreen() {
       Alert.alert('エラー', 'このカテゴリは既に存在します。');
       return;
     }
-    saveCustomCategory(trimmed);
+    await saveCustomCategory(trimmed);
     setSelectedCategories(prev => [...prev, trimmed]);
     setNewCategoryName('');
     setShowAddCategoryModal(false);

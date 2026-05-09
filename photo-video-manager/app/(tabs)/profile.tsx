@@ -66,14 +66,19 @@ export default function ProfileScreen() {
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadUserProfile();
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
     }).start();
+    return () => {
+      isMountedRef.current = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -125,7 +130,9 @@ export default function ProfileScreen() {
       videoPosts.forEach(async (post) => {
         try {
           const { uri } = await VideoThumbnails.getThumbnailAsync(post.mediaUri, { time: 0 });
-          setVideoThumbnails(prev => ({ ...prev, [post.id]: uri }));
+          if (isMountedRef.current) {
+            setVideoThumbnails(prev => ({ ...prev, [post.id]: uri }));
+          }
         } catch {
           // サムネイル生成失敗は無視
         }
@@ -276,19 +283,16 @@ export default function ProfileScreen() {
         { text: 'キャンセル', style: 'cancel' },
         { text: '削除', style: 'destructive', onPress: async () => {
           try {
+            await postService.deletePost(post.id);
             setUserPosts(prevPosts => prevPosts.filter(p => p.id !== post.id));
-
             if (userProfile) {
               setUserProfile({
                 ...userProfile,
                 postsCount: Math.max(0, (userProfile.postsCount || 0) - 1)
               });
             }
-
-            await postService.deletePost(post.id);
             Alert.alert('削除完了', 'ポストを削除しました。');
           } catch {
-            loadUserProfile();
             Alert.alert('エラー', `削除に失敗しました。`);
           }
         }}
@@ -472,9 +476,9 @@ export default function ProfileScreen() {
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.text }]}>アカウント</Text>
         <RNImage
-          source={require('@/assets/images/SalonCloudLogo.png')}
+          source={require('@/assets/images/HCINCLogo.png')}
           style={styles.headerLogo}
-          resizeMode="contain"
+          resizeMode="cover"
         />
       </View>
 
@@ -590,8 +594,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   headerLogo: {
-    width: 36,
-    height: 36,
+    width: 30,
+    height: 30,
     borderRadius: 8,
   },
   hamburgerButton: {

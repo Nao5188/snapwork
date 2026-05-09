@@ -7,8 +7,32 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HapticTab } from '@/components/HapticTab';
 import { useAppTheme } from '@/lib/ThemeContext';
 import { cameraCaptureService } from '@/lib/cameraCapture';
+import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 
-function AnimatedTabItem({ isFocused, options, onPress, colors }: any) {
+type AppColors = ReturnType<typeof useAppTheme>['colors'];
+
+interface TabItemOptions {
+  title?: string;
+  tabBarIcon?: (props: { color: string; focused: boolean; size: number }) => React.ReactNode;
+}
+
+interface AnimatedTabItemProps {
+  isFocused: boolean;
+  options: TabItemOptions;
+  onPress: () => void;
+  colors: AppColors;
+}
+
+interface AnimatedCenterTabProps {
+  isFocused: boolean;
+  isRecording: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+  colors: AppColors;
+  options: TabItemOptions;
+}
+
+function AnimatedTabItem({ isFocused, options, onPress, colors }: AnimatedTabItemProps) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -48,13 +72,14 @@ function AnimatedTabItem({ isFocused, options, onPress, colors }: any) {
         {options.tabBarIcon?.({
           color: isFocused ? colors.tabIconActive : colors.tabIconInactive,
           focused: isFocused,
+          size: 24,
         })}
       </Animated.View>
     </Pressable>
   );
 }
 
-function AnimatedCenterTab({ isFocused, isRecording, onPress, colors, options }: any) {
+function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, colors, options }: AnimatedCenterTabProps) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -78,6 +103,7 @@ function AnimatedCenterTab({ isFocused, isRecording, onPress, colors, options }:
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       style={styles.centerTabWrapper}
@@ -101,7 +127,7 @@ function AnimatedCenterTab({ isFocused, isRecording, onPress, colors, options }:
   );
 }
 
-function FloatingTabBar({ state, descriptors, navigation }: any) {
+function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppTheme();
   const [isRecording, setIsRecording] = useState(false);
@@ -114,7 +140,7 @@ function FloatingTabBar({ state, descriptors, navigation }: any) {
   return (
     <View style={[styles.tabBarOuter, { paddingBottom: insets.bottom + 8 }]}>
       <View style={[styles.tabBarContainer, { backgroundColor: colors.tabBar, borderColor: colors.tabBarBorder, borderWidth: 1 }]}>
-        {state.routes.map((route: any, index: number) => {
+        {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
           const isFocused = state.index === index;
           const isCenterTab = index === 1;
@@ -138,12 +164,18 @@ function FloatingTabBar({ state, descriptors, navigation }: any) {
                 onPress();
               }
             };
+            const handleCenterLongPress = () => {
+              if (isFocused) {
+                cameraCaptureService.triggerShowExposure();
+              }
+            };
             return (
               <AnimatedCenterTab
                 key={route.key}
                 isFocused={isFocused}
                 isRecording={isRecording}
                 onPress={handleCenterPress}
+                onLongPress={handleCenterLongPress}
                 colors={colors}
                 options={options}
               />

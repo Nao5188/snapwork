@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.kawa5188.snapwork",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "撮影した写真・動画に位置情報を付加するために使用します。"
       }
     },
     "android": {
@@ -39,6 +40,14 @@
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera",
           "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone",
           "recordAudioAndroid": true
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "$(PRODUCT_NAME) がカメラを使用します",
+          "enableMicrophonePermission": true,
+          "microphonePermissionText": "$(PRODUCT_NAME) がマイクを使用します"
         }
       ],
       [

@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(npm run lint)",
-      "Bash(npx tsc --noEmit)"
+      "Bash(npx tsc --noEmit)",
+      "Bash(cd /c/Users/kawan/workspace/snapWork/photo-video-manager && npm run 2>&1)",
+      "mcp__ide__getDiagnostics",
+      "Bash(npm run:*)",
+      "Bash(node:*)",
+      "Bash(npx expo:*)",
+      "Bash(xargs sed -i -e \"s/colors={\\\\[''\\\\#8B5CF6'', ''\\\\#EC4899''\\\\]}/colors={[''#667eea'', ''#764ba2'']}/g\" -e \"s/colors={\\\\[''\\\\#8B5CF6'', ''\\\\#EC4899''\\\\]}/colors={[''#667eea'', ''#764ba2'']}/g\" -e \"s/shadowColor: ''\\\\#8B5CF6''/shadowColor: ''#000''/g\" -e \"s/backgroundColor: ''\\\\#8B5CF6''/backgroundColor: ''#007AFF''/g\" -e \"s/borderColor: ''\\\\#8B5CF6''/borderColor: ''#007AFF''/g\" -e \"s/color: ''\\\\#8B5CF6''/color: ''#007AFF''/g\" -e \"s/color: ''\\\\#7C3AED''/color: ''#007AFF''/g\" -e \"s/color: ''\\\\#EC4899''/color: ''#007AFF''/g\" -e \"s/color=\"\"\\\\#7C3AED\"\"/color=\"\"#007AFF\"\"/g\")",
+      "Bash(xargs sed:*)",
+      "Bash(sed:*)",
+      "Bash(ls:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npm install:*)"
     ],
     "deny": [],
     "ask": []

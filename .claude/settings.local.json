@@ -6,7 +6,13 @@
       "Bash(netstat:*)",
       "Bash(findstr:*)",
       "Bash(cat:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(find:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npx tsc:*)",
+      "Bash(ls:*)",
+      "Bash(npm install:*)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\kawan\\\\workspace\\\\snapWork\\\\photo-video-manager && npm install expo-secure-store\")"
     ],
     "deny": [],
     "ask": []

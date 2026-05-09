@@ -17,7 +17,6 @@ import { Image } from 'expo-image';
 import { Video, ResizeMode } from 'expo-av';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import SkeletonLoader from './SkeletonLoader';
 import { useAppTheme } from '@/lib/ThemeContext';
 
@@ -50,7 +49,6 @@ interface Post {
   description?: string;
   userProfile?: UserProfile;
   likesCount?: number;
-  isLiked?: boolean;
 }
 
 interface PostCardProps {
@@ -99,25 +97,17 @@ export default function PostCard({
   showActions = false,
   showProfile = true
 }: PostCardProps) {
-  const [isLiked, setIsLiked] = useState(post.isLiked || false);
-  const [showHeartAnimation, setShowHeartAnimation] = useState(false);
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
   const [imageLoading, setImageLoading] = useState<Set<string>>(new Set(['initial']));
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
-  const [videoThumbnails, setVideoThumbnails] = useState<{ [id: string]: string }>({});
+  const [videoThumbnails, setVideoThumbnails] = useState<Record<string, string>>({});
   const [reduceMotion, setReduceMotion] = useState(false);
   const { colors } = useAppTheme();
-  const heartScale = useRef(new Animated.Value(0)).current;
-  const lastTap = useRef<number>(0);
 
   // 控えめなスライドインアニメーション
   const slideAnim = useRef(new Animated.Value(15)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
-
-  // いいねボタンのアニメーション
-  const likeButtonScale = useRef(new Animated.Value(1)).current;
-  const likeButtonRotate = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     // reduceMotion設定を確認
@@ -125,14 +115,15 @@ export default function PostCard({
   }, []);
 
   const generateThumbnail = useCallback(async (id: string, uri: string) => {
-    if (videoThumbnails[id]) return;
+    if (!uri) return;
     try {
-      const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 0 });
+      // time: 1000ms を使用して空白フレームを回避
+      const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 1000, quality: 0.6 });
       setVideoThumbnails(prev => ({ ...prev, [id]: thumbUri }));
     } catch {
-      // サムネイル生成失敗は無視
+      // サムネイル生成失敗時はフォールバック（暗い背景）を表示
     }
-  }, [videoThumbnails]);
+  }, []);
 
   useEffect(() => {
     if (reduceMotion) {
@@ -210,6 +201,15 @@ export default function PostCard({
     return [];
   }, [post.mediaItems, post.mediaUri, post.isVideo]);
 
+  useEffect(() => {
+    mediaItems.forEach(item => {
+      if (item.isVideo && !videoThumbnails[item.id]) {
+        generateThumbnail(item.id, item.mediaUrl);
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaItems]);
+
   const singleItem = mediaItems.length === 1 ? mediaItems[0] : null;
   const isSingleVideoPlaying = singleItem ? playingVideoId === singleItem.id : false;
 
@@ -220,95 +220,6 @@ export default function PostCard({
       return { uri: post.userProfile.avatar_url };
     }
     return null;
-  };
-
-  const handleDoubleTap = () => {
-    const now = Date.now();
-    const DOUBLE_PRESS_DELAY = 300;
-
-    if (now - lastTap.current < DOUBLE_PRESS_DELAY) {
-      if (!isLiked) {
-        handleLike();
-      }
-      triggerHeartAnimation();
-    }
-    lastTap.current = now;
-  };
-
-  const triggerHeartAnimation = () => {
-    if (reduceMotion) return;
-
-    setShowHeartAnimation(true);
-    heartScale.setValue(0);
-    Animated.sequence([
-      Animated.spring(heartScale, {
-        toValue: 1,
-        useNativeDriver: true,
-        tension: 120,
-        friction: 10,
-      }),
-      Animated.timing(heartScale, {
-        toValue: 0,
-        duration: 150,
-        delay: 300,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setShowHeartAnimation(false);
-    });
-  };
-
-  const handleLike = () => {
-    // 触覚フィードバック
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-    // 強化されたいいねボタンアニメーション
-    if (!reduceMotion) {
-      // スケールアニメーション
-      Animated.sequence([
-        Animated.timing(likeButtonScale, {
-          toValue: 0.7,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-        Animated.spring(likeButtonScale, {
-          toValue: 1.2,
-          useNativeDriver: true,
-          friction: 3,
-          tension: 150,
-        }),
-        Animated.spring(likeButtonScale, {
-          toValue: 1,
-          useNativeDriver: true,
-          friction: 4,
-          tension: 100,
-        }),
-      ]).start();
-
-      // いいね時はハートがバウンドする
-      if (!isLiked) {
-        Animated.sequence([
-          Animated.timing(likeButtonRotate, {
-            toValue: -0.1,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-          Animated.timing(likeButtonRotate, {
-            toValue: 0.1,
-            duration: 100,
-            useNativeDriver: true,
-          }),
-          Animated.timing(likeButtonRotate, {
-            toValue: 0,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    }
-
-    setIsLiked(!isLiked);
-    onLike?.();
   };
 
   const handleScroll = (event: any) => {
@@ -364,7 +275,7 @@ export default function PostCard({
         style={styles.mediaItem}
         onPress={item.isVideo
           ? () => setPlayingVideoId(isPlaying ? null : item.id)
-          : handleDoubleTap
+          : undefined
         }
       >
         {item.isVideo ? (
@@ -383,14 +294,17 @@ export default function PostCard({
               }}
             />
           ) : (
-            <Image
-              source={videoThumbnails[item.id]
-                ? { uri: videoThumbnails[item.id] }
-                : undefined}
-              style={styles.mediaImage}
-              contentFit="cover"
-              onLayout={() => generateThumbnail(item.id, item.mediaUrl)}
-            />
+            <View style={[styles.mediaImage, styles.videoThumbnailBg]}>
+              {videoThumbnails[item.id] ? (
+                <Image
+                  source={{ uri: videoThumbnails[item.id] }}
+                  style={StyleSheet.absoluteFillObject}
+                  contentFit="cover"
+                />
+              ) : (
+                <Ionicons name="videocam-outline" size={48} color="rgba(255,255,255,0.4)" />
+              )}
+            </View>
           )
         ) : imageErrors.has(item.id) ? (
           <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
@@ -498,7 +412,7 @@ export default function PostCard({
                 style={styles.singleMediaWrapper}
                 onPress={singleItem.isVideo
                   ? () => setPlayingVideoId(isSingleVideoPlaying ? null : singleItem.id)
-                  : handleDoubleTap
+                  : undefined
                 }
               >
                 {singleItem.isVideo ? (
@@ -517,14 +431,17 @@ export default function PostCard({
                       }}
                     />
                   ) : (
-                    <Image
-                      source={videoThumbnails[singleItem.id]
-                        ? { uri: videoThumbnails[singleItem.id] }
-                        : undefined}
-                      style={styles.singleMediaImage}
-                      contentFit="cover"
-                      onLayout={() => generateThumbnail(singleItem.id, singleItem.mediaUrl)}
-                    />
+                    <View style={[styles.singleMediaImage, styles.videoThumbnailBg]}>
+                      {videoThumbnails[singleItem.id] ? (
+                        <Image
+                          source={{ uri: videoThumbnails[singleItem.id] }}
+                          style={StyleSheet.absoluteFillObject}
+                          contentFit="cover"
+                        />
+                      ) : (
+                        <Ionicons name="videocam-outline" size={48} color="rgba(255,255,255,0.4)" />
+                      )}
+                    </View>
                   )
                 ) : imageErrors.has(singleItem.id) ? (
                   <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
@@ -558,17 +475,6 @@ export default function PostCard({
                 scrollEventThrottle={16}
                 style={styles.mediaList}
               />
-            )}
-
-            {showHeartAnimation && (
-              <Animated.View
-                style={[
-                  styles.heartAnimation,
-                  { transform: [{ scale: heartScale }] }
-                ]}
-              >
-                <Ionicons name="heart" size={80} color="white" />
-              </Animated.View>
             )}
 
             {renderDotIndicators()}
@@ -710,6 +616,9 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#fafafa',
   },
+  videoThumbnailBg: {
+    backgroundColor: '#1a1a1a',
+  },
   videoPlayButton: {
     position: 'absolute',
     top: '50%',
@@ -722,13 +631,6 @@ const styles = StyleSheet.create({
     height: 56,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  heartAnimation: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    marginTop: -40,
-    marginLeft: -40,
   },
   dotContainer: {
     position: 'absolute',
