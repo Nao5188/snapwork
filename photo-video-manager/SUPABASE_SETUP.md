@@ -138,8 +138,8 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your_anon_public_key_here
 ### 5.3 設定完了
 以下は記入例です。実際の値はリポジトリにコミットせず、ローカルの `.env.local` だけに保存してください：
 1. **Project URL**: `https://your-project-id.supabase.co`
-2. **API Key**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`
-3. **Database Password**: `REDACTED_DATABASE_PASSWORD`
+2. **API Key**: `your_anon_public_key_here`
+3. **Database Password**: Supabase Dashboardで生成した値をローカルの安全な場所にのみ保存してください
 4. ファイルを **保存**（Ctrl+S）
 
 ---
