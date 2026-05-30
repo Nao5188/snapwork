@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router';
 import React, { useEffect, useState, useRef } from 'react';
-import { View, StyleSheet, Animated, Pressable } from 'react-native';
+import { View, StyleSheet, Animated, Easing, Pressable, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -10,6 +10,9 @@ import { cameraCaptureService } from '@/lib/cameraCapture';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 
 type AppColors = ReturnType<typeof useAppTheme>['colors'];
+
+const NAV_ACCENT = '#2563EB';
+const NAV_ACCENT_SOFT = '#EEF4FF';
 
 interface TabItemOptions {
   title?: string;
@@ -33,23 +36,25 @@ interface AnimatedCenterTabProps {
 }
 
 function AnimatedTabItem({ isFocused, options, onPress, colors }: AnimatedTabItemProps) {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const pressAnim = useRef(new Animated.Value(0)).current;
+  const activeBackground = colors.tabBar === '#1a1a1a' ? 'rgba(37,99,235,0.18)' : NAV_ACCENT_SOFT;
+  const activeColor = colors.tabBar === '#1a1a1a' ? '#8DB4FF' : NAV_ACCENT;
 
   const handlePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.88,
+    Animated.timing(pressAnim, {
+      toValue: 1,
+      duration: 70,
+      easing: Easing.out(Easing.quad),
       useNativeDriver: true,
-      friction: 8,
-      tension: 200,
     }).start();
   };
 
   const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
+    Animated.timing(pressAnim, {
+      toValue: 0,
+      duration: 110,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-      friction: 5,
-      tension: 200,
     }).start();
   };
 
@@ -64,39 +69,60 @@ function AnimatedTabItem({ isFocused, options, onPress, colors }: AnimatedTabIte
     >
       <Animated.View
         style={[
-          styles.tabIconWrapper,
-          isFocused && { backgroundColor: colors.surface2 },
-          { transform: [{ scale: scaleAnim }] },
+          styles.tabPill,
+          isFocused && { backgroundColor: activeBackground },
+          {
+            opacity: pressAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0.72],
+            }),
+            transform: [{
+              translateY: pressAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 1.5],
+              }),
+            }],
+          },
         ]}
       >
         {options.tabBarIcon?.({
-          color: isFocused ? colors.tabIconActive : colors.tabIconInactive,
+          color: isFocused ? activeColor : colors.tabIconInactive,
           focused: isFocused,
-          size: 24,
+          size: 22,
         })}
+        <Text
+          style={[
+            styles.tabLabel,
+            { color: isFocused ? activeColor : colors.tabIconInactive },
+          ]}
+          numberOfLines={1}
+        >
+          {options.title}
+        </Text>
       </Animated.View>
     </Pressable>
   );
 }
 
 function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, colors, options }: AnimatedCenterTabProps) {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const pressAnim = useRef(new Animated.Value(0)).current;
+  const activeColor = colors.tabBar === '#1a1a1a' ? '#8DB4FF' : NAV_ACCENT;
 
   const handlePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.88,
+    Animated.timing(pressAnim, {
+      toValue: 1,
+      duration: 70,
+      easing: Easing.out(Easing.quad),
       useNativeDriver: true,
-      friction: 8,
-      tension: 200,
     }).start();
   };
 
   const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
+    Animated.timing(pressAnim, {
+      toValue: 0,
+      duration: 110,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-      friction: 5,
-      tension: 200,
     }).start();
   };
 
@@ -112,16 +138,45 @@ function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, color
     >
       <Animated.View
         style={[
-          styles.centerTabButton,
-          { backgroundColor: isRecording ? '#FF3B30' : colors.primary },
-          { transform: [{ scale: scaleAnim }] },
+          styles.centerTabContent,
+          {
+            opacity: pressAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0.84],
+            }),
+            transform: [{
+              translateY: pressAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 2],
+              }),
+            }],
+          },
         ]}
       >
-        <Ionicons
-          name={isRecording ? 'stop' : (isFocused ? 'camera' : 'camera-outline')}
-          size={28}
-          color={colors.primaryText}
-        />
+        <View
+          style={[
+            styles.centerTabButton,
+            {
+              backgroundColor: isRecording ? '#EF4444' : activeColor,
+              borderColor: colors.tabBar,
+            },
+          ]}
+        >
+          <Ionicons
+            name={isRecording ? 'stop' : (isFocused ? 'camera' : 'camera-outline')}
+            size={26}
+            color="#FFFFFF"
+          />
+        </View>
+        <Text
+          style={[
+            styles.centerTabLabel,
+            { color: isRecording ? '#EF4444' : activeColor },
+          ]}
+          numberOfLines={1}
+        >
+          {isRecording ? 'REC' : options.title}
+        </Text>
       </Animated.View>
     </Pressable>
   );
@@ -138,8 +193,17 @@ function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   }, []);
 
   return (
-    <View style={[styles.tabBarOuter, { paddingBottom: insets.bottom + 8 }]}>
-      <View style={[styles.tabBarContainer, { backgroundColor: colors.tabBar, borderColor: colors.tabBarBorder, borderWidth: 1 }]}>
+    <View
+      style={[
+        styles.tabBarOuter,
+        {
+          paddingBottom: Math.max(insets.bottom, 8),
+          backgroundColor: colors.tabBar,
+          borderTopColor: colors.tabBarBorder,
+        },
+      ]}
+    >
+      <View style={styles.tabBarContainer}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
           const isFocused = state.index === index;
@@ -255,57 +319,71 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 32,
-    paddingTop: 8,
-    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 10,
   },
   tabBarContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 36,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 16,
+    justifyContent: 'space-between',
+    minHeight: 62,
+    paddingHorizontal: 22,
+    paddingTop: 4,
   },
   tabItem: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 4,
+    minHeight: 56,
   },
-  tabIconWrapper: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  tabPill: {
+    minWidth: 74,
+    height: 48,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 3,
   },
-  tabIconWrapperActive: {
-    backgroundColor: '#f5f5f5',
+  tabLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    lineHeight: 12,
   },
   centerTabWrapper: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: -28,
+    minHeight: 56,
+    marginTop: -24,
   },
-  centerTabButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+  centerTabContent: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#444444',
+    gap: 3,
+  },
+  centerTabButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.18,
     shadowRadius: 12,
     elevation: 8,
+  },
+  centerTabLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    lineHeight: 12,
   },
 });

@@ -3,7 +3,6 @@ import {
   View,
   StyleSheet,
   Text,
-  Image,
   TouchableOpacity,
   Alert,
   KeyboardAvoidingView,
@@ -14,6 +13,7 @@ import {
   AccessibilityInfo,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import { authService, userService } from '../lib/supabase';
 import { storageService } from '../lib/storage';
@@ -27,7 +27,9 @@ import { useAppTheme } from '@/lib/ThemeContext';
 const { height } = Dimensions.get('window');
 
 export default function LoginScreen() {
-  const { colors, isDark } = useAppTheme();
+  const router = useRouter();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const { colors } = useAppTheme();
   const [isSignUp, setIsSignUp] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
@@ -46,17 +48,27 @@ export default function LoginScreen() {
   // アニメーション
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
-  const logoScale = useRef(new Animated.Value(0.8)).current;
 
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
   }, []);
 
   useEffect(() => {
-    if (reduceMotion) {
+    if (mode === 'signup') {
+      setIsSignUp(true);
+      setIsForgotPassword(false);
+      setErrors({});
+    } else if (mode === 'signin') {
+      setIsSignUp(false);
+      setIsForgotPassword(false);
+      setErrors({});
+    }
+  }, [mode]);
+
+  useEffect(() => {
+  if (reduceMotion) {
       fadeAnim.setValue(1);
       slideAnim.setValue(0);
-      logoScale.setValue(1);
       return;
     }
 
@@ -69,12 +81,6 @@ export default function LoginScreen() {
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 500,
-        useNativeDriver: true,
-      }),
-      Animated.spring(logoScale, {
-        toValue: 1,
-        friction: 8,
-        tension: 40,
         useNativeDriver: true,
       }),
     ]).start();
@@ -240,27 +246,10 @@ export default function LoginScreen() {
         );
 
         successFeedback();
-        Alert.alert(
-          'アカウント作成完了',
-          'メールアドレス宛に確認メールを送信しました。メール内のリンクをタップするとアプリが開き、自動的にログインされます。',
-          [{
-            text: 'OK',
-            onPress: () => {
-              setIsSignUp(false);
-              setFormData({
-                email: formData.email,
-                password: '',
-                confirmPassword: '',
-                displayName: '',
-              });
-              setErrors({});
-            }
-          }]
-        );
+        router.replace({ pathname: '/register-complete', params: { email: formData.email } } as any);
       } else {
         await authService.signIn(formData.email, formData.password, rememberMe);
         successFeedback();
-        Alert.alert('ログイン成功', 'ログインしました。');
       }
     } catch (error: any) {
       errorFeedback();
@@ -352,18 +341,16 @@ export default function LoginScreen() {
           >
             {/* Header */}
             <View style={styles.header}>
-              <Animated.View style={[styles.appNameContainer, { transform: [{ scale: logoScale }] }]}>
-                <Image
-                  source={require('../assets/images/SalonCloudLogo.png')}
-                  style={styles.logoImage}
-                  resizeMode="contain"
-                />
-              </Animated.View>
-              {(isForgotPassword || isSignUp) && (
-                <Text style={[styles.appTagline, { color: colors.textSecondary }]}>
-                  {isForgotPassword ? 'パスワードをリセット' : '新しいアカウントを作成'}
-                </Text>
-              )}
+              <Text style={[styles.screenTitle, { color: colors.text }]}>
+                {isForgotPassword ? 'パスワードをリセット' : isSignUp ? '新規登録' : 'ログイン'}
+              </Text>
+              <Text style={[styles.screenSubtitle, { color: colors.textSecondary }]}>
+                {isForgotPassword
+                  ? '登録したメールアドレスを入力してください'
+                  : isSignUp
+                    ? '新しいアカウントを作成'
+                    : 'アカウントにログインしてください'}
+              </Text>
             </View>
 
             {/* Form Card with Glassmorphism */}
@@ -603,19 +590,17 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 28,
   },
-  appNameContainer: {
-    alignItems: 'center',
+  screenTitle: {
+    ...typography.title1,
+    textAlign: 'center',
+    marginBottom: 8,
   },
-  logoImage: {
-    width: 360,
-    height: 140,
-  },
-  appTagline: {
-    fontSize: 15,
-    marginTop: 10,
-    letterSpacing: 0.3,
+  screenSubtitle: {
+    ...typography.subhead,
+    textAlign: 'center',
+    lineHeight: 22,
   },
   formCard: {
     borderRadius: borderRadius.xl,

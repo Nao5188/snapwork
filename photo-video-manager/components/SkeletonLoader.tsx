@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, ViewStyle, StyleProp } from 'react-native';
+import { View, StyleSheet, Animated, ViewStyle, StyleProp, Dimensions } from 'react-native';
 import { borderRadius } from '@/lib/theme';
 import { useAppTheme } from '@/lib/ThemeContext';
 
@@ -9,6 +9,13 @@ interface SkeletonLoaderProps {
   borderRadius?: number;
   style?: StyleProp<ViewStyle>;
 }
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CARD_HORIZONTAL_MARGIN = 10;
+const CARD_PADDING = 10;
+const MEDIA_WIDTH = SCREEN_WIDTH - CARD_HORIZONTAL_MARGIN * 2 - CARD_PADDING * 2;
+const DEFAULT_MEDIA_ASPECT_RATIO = 3 / 4;
+const CARD_MEDIA_HEIGHT = Math.round(MEDIA_WIDTH / DEFAULT_MEDIA_ASPECT_RATIO);
 
 export default function SkeletonLoader({
   width = '100%',
@@ -73,16 +80,10 @@ export function PostCardSkeleton() {
       {/* Image */}
       <SkeletonLoader
         width="100%"
-        height={300}
-        borderRadius={0}
-        style={{ marginVertical: 8 }}
+        height={CARD_MEDIA_HEIGHT}
+        borderRadius={10}
+        style={{ marginTop: 10 }}
       />
-
-      {/* Actions */}
-      <View style={styles.actions}>
-        <SkeletonLoader width={28} height={28} borderRadius={14} />
-        <SkeletonLoader width={28} height={28} borderRadius={14} style={{ marginLeft: 16 }} />
-      </View>
 
       {/* Content */}
       <View style={styles.content}>
@@ -114,8 +115,11 @@ export function ProfileSkeleton() {
 const styles = StyleSheet.create({
   skeleton: {},
   postCardSkeleton: {
-    marginBottom: 12,
-    padding: 16,
+    marginHorizontal: CARD_HORIZONTAL_MARGIN,
+    marginTop: 10,
+    marginBottom: 14,
+    padding: CARD_PADDING,
+    borderRadius: 16,
   },
   profileHeader: {
     flexDirection: 'row',
@@ -125,12 +129,9 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     flex: 1,
   },
-  actions: {
-    flexDirection: 'row',
-    paddingVertical: 12,
-  },
   content: {
-    paddingTop: 4,
+    paddingTop: 12,
+    paddingHorizontal: 4,
   },
   profileSkeleton: {
     alignItems: 'center' as const,

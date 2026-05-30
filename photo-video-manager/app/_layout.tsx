@@ -6,22 +6,43 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import 'react-native-reanimated';
 import * as Linking from 'expo-linking';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useColorScheme } from '@/hooks/useColorScheme';
-import { authService, supabase } from '@/lib/supabase';
+import { authService, storeService, supabase } from '@/lib/supabase';
 import { AppThemeProvider, useAppTheme } from '@/lib/ThemeContext';
 
-function AppContent({ isAuthenticated, colorScheme }: { isAuthenticated: boolean | null; colorScheme: string | null | undefined }) {
+const WELCOME_COMPLETED_KEY = 'saloncloud_welcome_completed';
+
+type AppContentProps = {
+  isAuthenticated: boolean | null;
+  hasStoreMembership: boolean | null;
+  hasCompletedWelcome: boolean;
+};
+
+function AppContent({ isAuthenticated, hasStoreMembership, hasCompletedWelcome }: AppContentProps) {
   const { isDark } = useAppTheme();
+  const initialRouteName = isAuthenticated
+    ? (hasStoreMembership ? '(tabs)' : 'store-onboarding')
+    : (hasCompletedWelcome ? 'login' : 'welcome');
+
   return (
     <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
-      <Stack initialRouteName={isAuthenticated ? "(tabs)" : "login"}>
+      <Stack initialRouteName={initialRouteName}>
+        <Stack.Screen name="welcome" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="register-complete" options={{ headerShown: false }} />
+        <Stack.Screen name="store-onboarding" options={{ headerShown: false }} />
+        <Stack.Screen name="store/create" options={{ headerShown: false }} />
+        <Stack.Screen name="store/join" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="post/create" options={{ headerShown: false }} />
         <Stack.Screen name="post/edit/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="gallery" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/filter-search" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/staff-album" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/staff-list" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/staff-posts" options={{ headerShown: false }} />
         <Stack.Screen
           name="my-posts"
           options={{
@@ -29,7 +50,6 @@ function AppContent({ isAuthenticated, colorScheme }: { isAuthenticated: boolean
             gestureEnabled: true,
             fullScreenGestureEnabled: false,
             gestureDirection: 'horizontal',
-
             animation: 'slide_from_right',
           }}
         />
@@ -42,50 +62,117 @@ function AppContent({ isAuthenticated, colorScheme }: { isAuthenticated: boolean
 }
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [hasStoreMembership, setHasStoreMembership] = useState<boolean | null>(null);
+  const [hasCompletedWelcome, setHasCompletedWelcome] = useState<boolean | null>(null);
   const isRecoveryFlow = useRef(false);
+  const routedUserId = useRef<string | null>(null);
+  const routingPromise = useRef<Promise<void> | null>(null);
+  const hasCompletedWelcomeRef = useRef(false);
 
   useEffect(() => {
-    // 初期認証状態チェック（自動ログイン含む）
+    let mounted = true;
+
+    const loadWelcomeState = async () => {
+      try {
+        const storedValue = await AsyncStorage.getItem(WELCOME_COMPLETED_KEY);
+        const completed = storedValue === 'true';
+        hasCompletedWelcomeRef.current = completed;
+        if (mounted) {
+          setHasCompletedWelcome(completed);
+        }
+      } catch (error) {
+        console.warn('Failed to load welcome state:', error);
+        hasCompletedWelcomeRef.current = false;
+        if (mounted) {
+          setHasCompletedWelcome(false);
+        }
+      }
+    };
+
+    const markWelcomeCompleted = async () => {
+      hasCompletedWelcomeRef.current = true;
+      if (mounted) {
+        setHasCompletedWelcome(true);
+      }
+
+      try {
+        await AsyncStorage.setItem(WELCOME_COMPLETED_KEY, 'true');
+      } catch (error) {
+        console.warn('Failed to save welcome state:', error);
+      }
+    };
+
+    const resetSignedOutState = () => {
+      routedUserId.current = null;
+      routingPromise.current = null;
+      setHasStoreMembership(null);
+      setIsAuthenticated(false);
+    };
+
+    const routeAuthenticatedUser = async (userId: string, shouldNavigate = true) => {
+      if (routedUserId.current === userId && routingPromise.current) {
+        return routingPromise.current;
+      }
+
+      routedUserId.current = userId;
+      const nextRoutingPromise = (async () => {
+        const hasMembership = await storeService.hasMembership(userId);
+        if (!mounted) return;
+
+        setHasStoreMembership(hasMembership);
+        setIsAuthenticated(true);
+        await markWelcomeCompleted();
+        if (shouldNavigate) {
+          router.replace((hasMembership ? '/(tabs)/history' : '/store-onboarding') as any);
+        }
+      })();
+
+      routingPromise.current = nextRoutingPromise;
+
+      try {
+        await nextRoutingPromise;
+      } finally {
+        if (routingPromise.current === nextRoutingPromise) {
+          routingPromise.current = null;
+        }
+      }
+    };
+
     const checkAuthState = async () => {
       try {
-        // まず自動ログインを試行
+        await loadWelcomeState();
         const autoLoginResult = await authService.attemptAutoLogin();
-        
-        if (autoLoginResult.success) {
+
+        if (autoLoginResult.success && 'user' in autoLoginResult && autoLoginResult.user) {
           console.log('Auto login successful for:', autoLoginResult.email);
-          setIsAuthenticated(true);
+          await routeAuthenticatedUser(autoLoginResult.user.id, false);
           return;
         }
 
-        // 自動ログインが失敗した場合は通常の認証状態チェック
         const { data: { user }, error: userError } = await authService.getCurrentUser();
         if (userError) {
-          // リフレッシュトークン無効などのエラー時はセッションをクリア
           await supabase.auth.signOut();
-          setIsAuthenticated(false);
+          resetSignedOutState();
+        } else if (user) {
+          await routeAuthenticatedUser(user.id, false);
         } else {
-          setIsAuthenticated(!!user);
+          resetSignedOutState();
         }
       } catch (error) {
         console.error('Auth check error:', error);
         await supabase.auth.signOut();
-        setIsAuthenticated(false);
+        resetSignedOutState();
       }
     };
 
-    checkAuthState();
-
-    // ディープリンクを処理してSupabaseセッションを設定
     const handleDeepLink = async (url: string) => {
       if (url.includes('reset-password')) {
         const fragment = url.split('#')[1];
         if (fragment) {
-          // Implicit フロー: #access_token=...&refresh_token=...&type=recovery
           const params = new URLSearchParams(fragment);
           const access_token = params.get('access_token');
           const refresh_token = params.get('refresh_token');
@@ -100,7 +187,6 @@ export default function RootLayout() {
             }
           }
         } else {
-          // PKCE フロー: ?code=xxx
           isRecoveryFlow.current = true;
           const { data, error } = await supabase.auth.exchangeCodeForSession(url);
           console.log('=== exchangeCodeForSession ===', { session: !!data?.session, error: error?.message });
@@ -110,75 +196,74 @@ export default function RootLayout() {
             isRecoveryFlow.current = false;
           }
         }
-      } else {
-        // メール確認ディープリンクの処理
-        const fragment = url.split('#')[1];
-        if (fragment) {
-          // Implicit フロー: #access_token=...&refresh_token=...&type=signup
-          const params = new URLSearchParams(fragment);
-          const access_token = params.get('access_token');
-          const refresh_token = params.get('refresh_token');
-          if (access_token && refresh_token) {
-            console.log('=== Email confirmation (implicit flow) ===');
-            const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-            if (error) console.error('Email confirmation session error:', error.message);
-            // onAuthStateChange の SIGNED_IN イベントが /(tabs)/history に遷移
-          }
-        } else if (url.includes('code=')) {
-          // PKCE フロー: ?code=xxx
-          console.log('=== Email confirmation (PKCE flow) ===');
-          const { data, error } = await supabase.auth.exchangeCodeForSession(url);
-          console.log('=== exchangeCodeForSession (signup) ===', { session: !!data?.session, error: error?.message });
-          // onAuthStateChange の SIGNED_IN イベントが /(tabs)/history に遷移
+        return;
+      }
+
+      const fragment = url.split('#')[1];
+      if (fragment) {
+        const params = new URLSearchParams(fragment);
+        const access_token = params.get('access_token');
+        const refresh_token = params.get('refresh_token');
+        if (access_token && refresh_token) {
+          console.log('=== Email confirmation (implicit flow) ===');
+          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+          if (error) console.error('Email confirmation session error:', error.message);
         }
+      } else if (url.includes('code=')) {
+        console.log('=== Email confirmation (PKCE flow) ===');
+        const { data, error } = await supabase.auth.exchangeCodeForSession(url);
+        console.log('=== exchangeCodeForSession (signup) ===', { session: !!data?.session, error: error?.message });
       }
     };
 
+    checkAuthState();
+
     Linking.getInitialURL().then((url) => {
-      if (url) handleDeepLink(url);
+      if (url) void handleDeepLink(url);
     });
 
     const linkingSubscription = Linking.addEventListener('url', ({ url }) => {
-      handleDeepLink(url);
+      void handleDeepLink(url);
     });
 
-    // 認証状態の変更を監視
     const subscription = authService.onAuthStateChange((event, session) => {
-      console.log('Auth state changed:', event, !!session?.user);
-
       if (event === 'PASSWORD_RECOVERY') {
-        // リカバリーフロー: 通常ログインとして扱わない
-        console.log('PASSWORD_RECOVERY - navigating to reset-password');
+        setHasStoreMembership(true);
+        setIsAuthenticated(true);
         isRecoveryFlow.current = false;
         router.replace({ pathname: '/reset-password', params: { fromRecovery: '1' } });
       } else if (event === 'SIGNED_IN' && session?.user) {
         if (isRecoveryFlow.current) {
-          // PKCEリカバリーフロー: ホーム画面に遷移しない（handleDeepLinkがreset-passwordに遷移済み）
-          console.log('SIGNED_IN during recovery flow, skipping navigation');
+          setHasStoreMembership(true);
+          setIsAuthenticated(true);
           isRecoveryFlow.current = false;
         } else {
-          // 通常ログイン
-          setIsAuthenticated(true);
-          console.log('Navigating to history tab...');
-          router.replace('/(tabs)/history');
+          void routeAuthenticatedUser(session.user.id);
         }
       } else if (event === 'SIGNED_OUT') {
-        setIsAuthenticated(false);
-        console.log('Navigating to login...');
-        router.replace('/login');
-      } else if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
-        setIsAuthenticated(!!session?.user);
+        resetSignedOutState();
+        router.replace((hasCompletedWelcomeRef.current ? '/login' : '/welcome') as any);
+      } else if (event === 'INITIAL_SESSION') {
+        if (!session?.user) {
+          resetSignedOutState();
+        }
+      } else if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (session?.user) {
+          setIsAuthenticated(true);
+        } else {
+          resetSignedOutState();
+        }
       }
     });
 
     return () => {
-      console.log('Cleaning up auth subscription');
+      mounted = false;
       subscription?.data?.subscription?.unsubscribe();
       linkingSubscription.remove();
     };
   }, []);
 
-  if (!loaded || isAuthenticated === null) {
+  if (!loaded || hasCompletedWelcome === null || isAuthenticated === null || (isAuthenticated && hasStoreMembership === null)) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#1a1a1a" />
@@ -189,7 +274,11 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AppThemeProvider>
-        <AppContent isAuthenticated={isAuthenticated} colorScheme={colorScheme} />
+        <AppContent
+          isAuthenticated={isAuthenticated}
+          hasStoreMembership={hasStoreMembership}
+          hasCompletedWelcome={hasCompletedWelcome}
+        />
       </AppThemeProvider>
     </GestureHandlerRootView>
   );

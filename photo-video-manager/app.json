@@ -45,16 +45,16 @@
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "$(PRODUCT_NAME) がカメラを使用します",
+          "cameraPermissionText": "$(PRODUCT_NAME) がカメラを使用します。",
           "enableMicrophonePermission": true,
-          "microphonePermissionText": "$(PRODUCT_NAME) がマイクを使用します"
+          "microphonePermissionText": "$(PRODUCT_NAME) がマイクを使用します。"
         }
       ],
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/images/SalonCloudLogo.png",
+          "imageWidth": 160,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }

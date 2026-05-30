@@ -62,6 +62,7 @@ export default function HistoryScreen() {
   const [downloadModalPost, setDownloadModalPost] = useState<PostHistoryItem | null>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [userRole, setUserRole] = useState<'owner' | 'staff' | null>(null);
   const { colors, isDark } = useAppTheme();
 
   const flatListRef = useRef<FlatList>(null);
@@ -99,6 +100,23 @@ export default function HistoryScreen() {
         return;
       }
 
+      const { data: memberData } = await supabase
+        .from('store_members')
+        .select('store_id, role')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      const activeStoreId = memberData?.store_id ?? null;
+      setUserRole((memberData?.role as 'owner' | 'staff') ?? null);
+
+      if (!activeStoreId) {
+        setPosts([]);
+        router.replace('/store-onboarding');
+        return;
+      }
+
       const { data: currentProfile } = await supabase
         .from('users')
         .select('id, username, display_name, avatar_url')
@@ -108,6 +126,7 @@ export default function HistoryScreen() {
       const { data: postsData, error: postsError } = await supabase
         .from('posts')
         .select('*')
+        .eq('store_id', activeStoreId)
         .order('created_at', { ascending: false });
 
       if (postsError) {
@@ -118,17 +137,30 @@ export default function HistoryScreen() {
         const userIds = [...new Set(postsData.map(post => post.user_id))];
 
         // public_profilesビューを使用（emailを除外した安全なビュー）
-        const { data: usersData } = await supabase
+        const { data: profileUsersData, error: profileUsersError } = await supabase
           .from('public_profiles')
           .select('id, username, display_name, avatar_url')
           .in('id', userIds);
 
-        const userMap = new Map();
-        if (usersData) {
-          usersData.forEach(user => {
-            userMap.set(user.id, user);
-          });
+        let usersData = profileUsersData ?? [];
+        if (profileUsersError) {
+          console.warn('Failed to fetch public profiles, falling back to users:', profileUsersError);
+          const { data: directUsersData, error: directUsersError } = await supabase
+            .from('users')
+            .select('id, username, display_name, avatar_url')
+            .in('id', userIds);
+
+          if (directUsersError) {
+            console.warn('Failed to fetch user profiles:', directUsersError);
+          } else {
+            usersData = directUsersData ?? [];
+          }
         }
+
+        const userMap = new Map();
+        usersData.forEach(user => {
+          userMap.set(user.id, user);
+        });
 
         // post_mediaを一括取得（N+1クエリ対策）
         const postIds = postsData.map(post => post.id);
@@ -408,7 +440,7 @@ export default function HistoryScreen() {
         showProfile={true}
         onEdit={() => handleEditPost(item)}
         onDelete={() => handleDeletePost(item)}
-        onDownload={() => handleDownloadPost(item)}
+        onDownload={userRole === 'owner' ? () => handleDownloadPost(item) : undefined}
         onLike={() => handleLike(item.id)}
       />
     );
@@ -559,7 +591,7 @@ export default function HistoryScreen() {
         <Ionicons name="menu" size={26} color={colors.text} />
       </TouchableOpacity>
       <TouchableOpacity onPress={scrollToTop} activeOpacity={0.7} style={styles.headerTitleButton}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>みんなの投稿</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>タイムライン</Text>
       </TouchableOpacity>
       <RNImage
         source={require('@/assets/images/HCINCLogo.png')}

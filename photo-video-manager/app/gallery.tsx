@@ -16,7 +16,7 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { mediaLibraryService, authService } from '@/lib/supabase';
@@ -40,8 +40,13 @@ interface MediaAsset {
   created_at: string;
 }
 
+const getSearchParam = (value: string | string[] | undefined) => (
+  Array.isArray(value) ? value[0] : value
+);
+
 export default function GalleryScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -51,6 +56,12 @@ export default function GalleryScreen() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const { colors } = useAppTheme();
+  const returnToCreate = getSearchParam(params.returnToCreate) === '1';
+  const existingMediaCount = Math.min(
+    5,
+    Math.max(0, Number(getSearchParam(params.existingMediaCount) ?? 0) || 0)
+  );
+  const maxSelectableItems = returnToCreate ? Math.max(0, 5 - existingMediaCount) : 5;
 
   const generateThumbnails = async (assets: MediaAsset[]) => {
     const videoAssets = assets.filter(a => a.is_video);
@@ -151,29 +162,52 @@ export default function GalleryScreen() {
     }
   };
 
+  const navigateToCreateWithMedia = (selectedAssets: MediaAsset[]) => {
+    const selectedMedia = selectedAssets.map(asset => asset.file_path).join(',');
+    const mediaTypes = selectedAssets.map(asset => asset.is_video ? 'video' : 'photo').join(',');
+    const createParams: Record<string, string> = {
+      selectedMedia,
+      mediaTypes,
+    };
+
+    if (returnToCreate) {
+      createParams.appendMedia = '1';
+    }
+
+    router.push({
+      pathname: '/post/create',
+      params: createParams,
+    } as any);
+  };
+
   const handleCreatePost = () => {
     if (selectedItems.length === 0) {
       Alert.alert('選択エラー', '投稿するメディアを選択してください。');
       return;
     }
 
-    if (selectedItems.length > 5) {
+    if (maxSelectableItems <= 0) {
+      Alert.alert('追加できません', 'メディアは最大5件まで追加できます。');
+      return;
+    }
+
+    if (selectedItems.length > maxSelectableItems) {
       Alert.alert(
         '選択制限',
-        `投稿作成では最大5枚まで選択できます。\n現在${selectedItems.length}枚選択されています。`,
+        returnToCreate
+          ? `追加できるのはあと${maxSelectableItems}件までです。\n現在${selectedItems.length}件選択されています。`
+          : `投稿作成では最大5枚まで選択できます。\n現在${selectedItems.length}枚選択されています。`,
         [
           {
             text: 'キャンセル',
             style: 'cancel',
           },
           {
-            text: '最初の5枚で投稿',
+            text: `最初の${maxSelectableItems}件で${returnToCreate ? '追加' : '投稿'}`,
             onPress: () => {
-              const first5Items = selectedItems.slice(0, 5);
-              const selectedAssets = mediaAssets.filter(asset => first5Items.includes(asset.id));
-              const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
-              const mediaTypes = selectedAssets.map(asset => asset.is_video ? 'video' : 'photo').join(',');
-              router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}&mediaTypes=${mediaTypes}`);
+              const targetItems = selectedItems.slice(0, maxSelectableItems);
+              const selectedAssets = mediaAssets.filter(asset => targetItems.includes(asset.id));
+              navigateToCreateWithMedia(selectedAssets);
             },
           },
         ]
@@ -182,10 +216,7 @@ export default function GalleryScreen() {
     }
 
     const selectedAssets = mediaAssets.filter(asset => selectedItems.includes(asset.id));
-    const imageUris = selectedAssets.map(asset => asset.file_path).join(',');
-    const mediaTypes = selectedAssets.map(asset => asset.is_video ? 'video' : 'photo').join(',');
-
-    router.push(`/post/create?selectedMedia=${encodeURIComponent(imageUris)}&mediaTypes=${mediaTypes}`);
+    navigateToCreateWithMedia(selectedAssets);
   };
 
   const handleDeleteMedia = async () => {
@@ -461,7 +492,7 @@ export default function GalleryScreen() {
                   <Text style={styles.deleteButtonText}>削除</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.createPostButton} onPress={handleCreatePost} activeOpacity={0.8}>
-                  <Text style={styles.createPostButtonText}>投稿作成</Text>
+                  <Text style={styles.createPostButtonText}>{returnToCreate ? '追加' : '投稿作成'}</Text>
                   <Ionicons name="arrow-forward" size={18} color="white" />
                 </TouchableOpacity>
               </View>

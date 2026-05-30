@@ -21,6 +21,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { postService, authService, fileStorageService } from '@/lib/supabase';
 import Button, { IconButton, TagButton } from '@/components/Button';
 import { useAppTheme } from '@/lib/ThemeContext';
+import { buildPostMenuName } from '@/lib/postMenuName';
 
 const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
@@ -346,12 +347,7 @@ export default function EditPostScreen() {
         })
       );
 
-      // カテゴリ情報を含める
-      let menuNameWithCategories = '';
-      if (selectedCategories.length > 0) {
-        const categoryStr = selectedCategories.join(',');
-        menuNameWithCategories = `|CATEGORIES:${categoryStr}`;
-      }
+      const menuNameWithCategories = buildPostMenuName('', selectedCategories);
 
       await postService.updatePost(id as string, {
         title: formData.title || '無題',

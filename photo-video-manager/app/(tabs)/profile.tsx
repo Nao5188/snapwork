@@ -21,17 +21,18 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as Haptics from 'expo-haptics';
 import * as VideoThumbnails from 'expo-video-thumbnails';
-import { authService, userService, postService, fileStorageService } from '@/lib/supabase';
-import AnimatedButton from '@/components/AnimatedButton';
+import { authService, userService, postService, fileStorageService, storeService } from '@/lib/supabase';
 import DrawerMenu from '@/components/DrawerMenu';
 import { useAppTheme } from '@/lib/ThemeContext';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
-const GRID_GAP = 3;
-const itemSize = (width - (GRID_GAP * (numColumns + 1))) / numColumns;
+const GRID_GAP = 10;
+const GRID_HORIZONTAL_PADDING = 16;
+const itemSize = (width - (GRID_HORIZONTAL_PADDING * 2) - (GRID_GAP * (numColumns - 1))) / numColumns;
+const PROFILE_ACCENT = '#2563EB';
+const PROFILE_ACCENT_SOFT = '#EEF4FF';
 
 interface UserPost {
   id: string;
@@ -49,6 +50,8 @@ interface UserProfile {
   displayName: string;
   avatar: string;
   postsCount: number;
+  storeName: string | null;
+  role: 'owner' | 'staff' | null;
 }
 
 export default function ProfileScreen() {
@@ -93,9 +96,16 @@ export default function ProfileScreen() {
         return;
       }
 
-      const profile = await userService.getProfile(user.id);
-      const posts = await postService.getUserPosts(user.id);
-      const postsCount = await postService.getUserPostsCount(user.id);
+      const [profile, posts, postsCount, memberships] = await Promise.all([
+        userService.getProfile(user.id),
+        postService.getUserPosts(user.id),
+        postService.getUserPostsCount(user.id),
+        storeService.getMyMemberships(user.id).catch((storeError) => {
+          console.warn('Failed to load store membership:', storeError);
+          return [];
+        }),
+      ]);
+      const primaryMembership = memberships[0] ?? null;
 
       let avatarUrl = profile.avatar_url;
 
@@ -111,6 +121,8 @@ export default function ProfileScreen() {
         displayName: profile.display_name,
         avatar: avatarUrl,
         postsCount: postsCount,
+        storeName: primaryMembership?.store?.name ?? null,
+        role: primaryMembership?.role ?? null,
       });
 
       const formattedPosts: UserPost[] = posts.map(post => ({
@@ -148,6 +160,8 @@ export default function ProfileScreen() {
           displayName: `ユーザー${fallbackUser.id.slice(-4)}`,
           avatar: `https://ui-avatars.com/api/?name=User&size=200&background=1a1a1a&color=fff`,
           postsCount: 0,
+          storeName: null,
+          role: null,
         });
       }
 
@@ -243,28 +257,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert(
-      'ログアウト',
-      '本当にログアウトしますか？',
-      [
-        { text: 'キャンセル', style: 'cancel' },
-        {
-          text: 'ログアウト',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await authService.signOut();
-              router.replace('/login');
-            } catch {
-              Alert.alert('エラー', 'ログアウトに失敗しました。');
-            }
-          }
-        }
-      ]
-    );
-  };
-
   const handleCancelEdit = () => {
     setIsEditModalVisible(false);
     setEditDisplayName('');
@@ -277,7 +269,7 @@ export default function ProfileScreen() {
 
   const handleDeletePost = (post: UserPost) => {
     Alert.alert(
-      'ポスト削除',
+      '投稿削除',
       `「${post.title}」を削除しますか？`,
       [
         { text: 'キャンセル', style: 'cancel' },
@@ -300,28 +292,23 @@ export default function ProfileScreen() {
     );
   };
 
-  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
-
-  const handlePostLongPress = (postId: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSelectedPostId(selectedPostId === postId ? null : postId);
+  const handlePostMenu = (post: UserPost) => {
+    Alert.alert(
+      '投稿の操作',
+      post.title,
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '編集', onPress: () => handleEditPost(post.id) },
+        { text: '削除', style: 'destructive', onPress: () => handleDeletePost(post) },
+      ]
+    );
   };
 
   const renderPostItem = ({ item }: { item: UserPost }) => {
-    const isSelected = selectedPostId === item.id;
-
     return (
       <Pressable
         style={styles.postItem}
-        onPress={() => {
-          if (isSelected) {
-            setSelectedPostId(null);
-          } else {
-            router.push(`/my-posts?postId=${item.id}`);
-          }
-        }}
-        onLongPress={() => handlePostLongPress(item.id)}
-        delayLongPress={300}
+        onPress={() => router.push(`/my-posts?postId=${item.id}`)}
       >
         <View style={styles.postImageWrapper}>
           <Image
@@ -337,35 +324,18 @@ export default function ProfileScreen() {
               <Ionicons name="play" size={14} color="white" />
             </View>
           )}
-          {/* 長押し時に表示されるオーバーレイ */}
-          {isSelected && (
-            <Animated.View style={styles.postOverlay}>
-              <View style={styles.postOverlayButtons}>
-                <TouchableOpacity
-                  style={styles.overlayEditButton}
-                  onPress={() => {
-                    setSelectedPostId(null);
-                    handleEditPost(item.id);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="create-outline" size={22} color="white" />
-                  <Text style={styles.overlayButtonText}>編集</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.overlayDeleteButton}
-                  onPress={() => {
-                    setSelectedPostId(null);
-                    handleDeletePost(item);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="trash-outline" size={22} color="white" />
-                  <Text style={styles.overlayButtonText}>削除</Text>
-                </TouchableOpacity>
-              </View>
-            </Animated.View>
-          )}
+          <TouchableOpacity
+            style={styles.postMenuButton}
+            onPress={(event) => {
+              event.stopPropagation();
+              handlePostMenu(item);
+            }}
+            activeOpacity={0.85}
+            hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+            accessibilityLabel="投稿の操作メニュー"
+          >
+            <Ionicons name="ellipsis-horizontal" size={17} color="#222222" />
+          </TouchableOpacity>
         </View>
         {/* いいね数表示 */}
         {item.likesCount > 0 && (
@@ -378,67 +348,87 @@ export default function ProfileScreen() {
     );
   };
 
+  const renderEmptyState = () => {
+    return (
+      <View style={styles.emptyState}>
+        <View style={styles.emptyStateIcon}>
+          <Ionicons name="images-outline" size={30} color="#A3AAB8" />
+        </View>
+        <Text style={[styles.emptyStateTitle, { color: colors.text }]}>投稿はまだありません</Text>
+        <Text style={[styles.emptyStateMessage, { color: colors.textMuted }]}>
+          カメラから写真や動画を投稿すると、ここに表示されます。
+        </Text>
+      </View>
+    );
+  };
+
   const renderHeader = () => {
     if (!userProfile) return null;
+    const roleLabel = userProfile.role === 'owner'
+      ? 'オーナー'
+      : userProfile.role === 'staff'
+        ? 'スタッフ'
+        : 'メンバー';
+    const storeName = userProfile.storeName ?? '店舗未設定';
 
     return (
-      <View style={[styles.header, { backgroundColor: colors.surface }]}>
-        {/* プロフィールヘッダー */}
-        <View style={[styles.profileGradientBg, { backgroundColor: colors.surface }]}>
-          <View style={styles.profileContent}>
-            <View style={styles.avatarSection}>
-              <View style={[styles.avatarRing, { borderColor: colors.border, backgroundColor: colors.surface2 }]}>
+      <View style={[styles.header, { backgroundColor: colors.background }]}>
+        <View style={[styles.profilePanel, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.profileMainRow}>
+            <TouchableOpacity
+              style={styles.avatarSection}
+              onPress={handleEditProfile}
+              activeOpacity={0.86}
+              accessibilityLabel="プロフィール画像を編集"
+            >
+              <View style={[styles.avatarRing, { borderColor: colors.borderLight, backgroundColor: colors.surface2 }]}>
                 <Image
                   source={{ uri: userProfile.avatar }}
                   style={styles.avatar}
                   contentFit="cover"
                 />
               </View>
-            </View>
+              <View style={[styles.avatarCameraButton, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+                <Ionicons name="camera-outline" size={17} color={colors.text} />
+              </View>
+            </TouchableOpacity>
 
-            <Text style={[styles.displayName, { color: colors.text }]} testID="profile-displayname">
-              {userProfile.displayName || 'ユーザー'}
-            </Text>
-
-            <View style={[styles.statsContainer, { backgroundColor: colors.surface2 }]}>
-              <View style={styles.statItem}>
-                <Text style={[styles.statNumber, { color: colors.text }]}>{userProfile.postsCount}</Text>
-                <Text style={[styles.statLabel, { color: colors.textSecondary }]}>投稿</Text>
+            <View style={styles.profileInfo}>
+              <Text style={[styles.displayName, { color: colors.text }]} testID="profile-displayname" numberOfLines={1}>
+                {userProfile.displayName || 'ユーザー'}
+              </Text>
+              <View style={[styles.roleBadge, { backgroundColor: PROFILE_ACCENT_SOFT }]}>
+                <Text style={styles.roleBadgeText}>{roleLabel}</Text>
+              </View>
+              <View style={styles.storeLine}>
+                <Ionicons name="storefront-outline" size={14} color={colors.textMuted} />
+                <Text style={[styles.username, { color: colors.textMuted }]} numberOfLines={1}>
+                  {storeName}
+                </Text>
               </View>
             </View>
           </View>
+
+          <View style={styles.profileSideActions}>
+            <TouchableOpacity
+              style={[styles.cardEditButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
+              onPress={handleEditProfile}
+              activeOpacity={0.85}
+              accessibilityLabel="プロフィールを編集"
+              testID="profile-edit-button"
+            >
+              <Ionicons name="create-outline" size={15} color={colors.text} />
+              <Text style={[styles.cardEditButtonText, { color: colors.text }]} numberOfLines={1}>プロフィールを編集</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* ボタンエリア */}
-        <View style={[styles.buttonSection, { backgroundColor: colors.surface }]}>
-          <TouchableOpacity
-            style={[styles.editButton, { backgroundColor: colors.surface2, borderColor: colors.border }]}
-            onPress={handleEditProfile}
-            activeOpacity={0.85}
-            accessibilityLabel="プロフィールを編集"
-            testID="profile-edit-button"
-          >
-            <Ionicons name="create-outline" size={16} color={colors.text} />
-            <Text style={[styles.editButtonText, { color: colors.text }]}>プロフィールを編集</Text>
-          </TouchableOpacity>
-
-          <AnimatedButton
-            style={styles.logoutButton}
-            onPress={handleLogout}
-            accessibilityLabel="ログアウト"
-            testID="profile-logout-button"
-          >
-            <Ionicons name="log-out-outline" size={16} color="#FF3B30" />
-            <Text style={styles.logoutButtonText}>ログアウト</Text>
-          </AnimatedButton>
-        </View>
-
-        <View style={[styles.postsHeader, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+        <View style={[styles.postsHeader, { backgroundColor: colors.background }]}>
           <View style={styles.postsHeaderLeft}>
             <Ionicons name="grid-outline" size={18} color={colors.text} />
             <Text style={[styles.postsHeaderText, { color: colors.text }]}>投稿一覧</Text>
           </View>
-          <Text style={[styles.postsHeaderHint, { color: colors.textMuted }]}>長押しで編集・削除</Text>
+          <Text style={[styles.postsHeaderCount, { color: colors.textMuted }]}>{userProfile.postsCount}件</Text>
         </View>
       </View>
     );
@@ -474,7 +464,7 @@ export default function ProfileScreen() {
         >
           <Ionicons name="menu" size={26} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>アカウント</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>プロフィール</Text>
         <RNImage
           source={require('@/assets/images/HCINCLogo.png')}
           style={styles.headerLogo}
@@ -489,6 +479,7 @@ export default function ProfileScreen() {
           keyExtractor={(item) => item.id}
           numColumns={numColumns}
           ListHeaderComponent={renderHeader}
+          ListEmptyComponent={renderEmptyState}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
@@ -609,29 +600,42 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 100,
+    paddingBottom: 132,
   },
   header: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#fafafa',
+    paddingTop: 16,
+    paddingBottom: 10,
   },
-  profileGradientBg: {
-    paddingTop: 36,
-    paddingBottom: 28,
-    paddingHorizontal: 20,
-    alignItems: 'center',
+  profilePanel: {
+    marginHorizontal: 16,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 16,
+    borderRadius: 18,
+    borderWidth: 1,
     backgroundColor: '#ffffff',
+    position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.07,
+    shadowRadius: 20,
+    elevation: 3,
   },
-  profileContent: {
+  profileMainRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     width: '100%',
+    gap: 13,
   },
   avatarSection: {
-    marginBottom: 14,
+    flexShrink: 0,
+    position: 'relative',
   },
   avatarRing: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 92,
+    height: 92,
+    borderRadius: 46,
     borderWidth: 2,
     borderColor: '#e5e5e5',
     overflow: 'hidden',
@@ -642,94 +646,85 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#f5f5f5',
   },
-  displayName: {
-    fontSize: 20,
+  avatarCameraButton: {
+    position: 'absolute',
+    right: -2,
+    bottom: 0,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  profileInfo: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 148,
+  },
+  roleBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    marginBottom: 10,
+  },
+  roleBadgeText: {
+    color: PROFILE_ACCENT,
+    fontSize: 11,
     fontWeight: '700',
+  },
+  displayName: {
+    fontSize: 22,
+    fontWeight: '800',
     color: '#444444',
-    marginBottom: 12,
-    letterSpacing: -0.3,
+    marginBottom: 8,
+    letterSpacing: 0,
+  },
+  storeLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
   username: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.8)',
-    marginBottom: 16,
+    fontSize: 13,
+    color: '#999999',
   },
-  statsContainer: {
+  profileSideActions: {
+    position: 'absolute',
+    top: 22,
+    right: 16,
+    width: 142,
+    alignItems: 'stretch',
+  },
+  cardEditButton: {
+    minHeight: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
     flexDirection: 'row',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 24,
-    paddingVertical: 10,
-  },
-  statItem: {
     alignItems: 'center',
-    paddingHorizontal: 20,
+    justifyContent: 'center',
+    gap: 6,
   },
-  statNumber: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#444444',
-  },
-  statLabel: {
+  cardEditButtonText: {
     fontSize: 12,
-    color: '#666666',
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  buttonSection: {
-    flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    backgroundColor: '#FFFFFF',
-  },
-  editButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#e5e5e5',
-  },
-  editButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#444444',
-  },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    backgroundColor: '#FFF5F5',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#FFE5E5',
-    alignSelf: 'stretch',
-  },
-  logoutButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FF3B30',
+    fontWeight: '700',
   },
   postsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 16,
+    paddingTop: 18,
     paddingHorizontal: 16,
     paddingBottom: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#e5e5e5',
     width: '100%',
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fafafa',
   },
   postsHeaderLeft: {
     flexDirection: 'row',
@@ -737,13 +732,40 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   postsHeaderText: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#444444',
   },
-  postsHeaderHint: {
-    fontSize: 11,
+  postsHeaderCount: {
+    fontSize: 13,
     color: '#999999',
+    fontWeight: '700',
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingTop: 42,
+    paddingBottom: 80,
+  },
+  emptyStateIcon: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#F1F4F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  emptyStateTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  emptyStateMessage: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
   },
   loadingContainer: {
     justifyContent: 'center',
@@ -764,38 +786,45 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(12, 16, 28, 0.42)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
   },
   modalContent: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '90%',
-    minHeight: '50%',
+    borderRadius: 22,
+    maxHeight: '78%',
+    width: '100%',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    elevation: 8,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#ECEFF4',
   },
   modalTitle: {
-    fontSize: 17,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#444444',
   },
   cancelText: {
-    fontSize: 16,
-    color: '#888',
+    fontSize: 14,
+    color: '#8B93A4',
+    fontWeight: '600',
   },
   saveText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#444444',
+    fontSize: 14,
+    fontWeight: '700',
+    color: PROFILE_ACCENT,
   },
   saveTextDisabled: {
     color: '#ccc',
@@ -804,9 +833,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   modalBodyContent: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 40,
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 24,
   },
   inputWrapper: {
     marginBottom: 20,
@@ -842,15 +871,15 @@ const styles = StyleSheet.create({
   },
   avatarEditContainer: {
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 24,
   },
   avatarEditWrapper: {
     position: 'relative',
   },
   avatarEdit: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     backgroundColor: '#f5f5f5',
   },
   avatarEditOverlay: {
@@ -859,7 +888,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    borderRadius: 50,
+    borderRadius: 44,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -871,7 +900,7 @@ const styles = StyleSheet.create({
   },
   row: {
     justifyContent: 'flex-start',
-    paddingHorizontal: GRID_GAP,
+    paddingHorizontal: GRID_HORIZONTAL_PADDING,
     gap: GRID_GAP,
   },
   postItem: {
@@ -879,7 +908,7 @@ const styles = StyleSheet.create({
     height: itemSize,
     marginBottom: GRID_GAP,
     position: 'relative',
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#f5f5f5',
   },
@@ -887,7 +916,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     position: 'relative',
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   postImage: {
@@ -895,35 +924,21 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#f5f5f5',
   },
-  postOverlay: {
+  postMenuButton: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  postOverlayButtons: {
-    flexDirection: 'row',
-    gap: 20,
-  },
-  overlayEditButton: {
+    top: 7,
+    right: 7,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 12,
-  },
-  overlayDeleteButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
-  },
-  overlayButtonText: {
-    color: 'white',
-    fontSize: 11,
-    fontWeight: '500',
-    marginTop: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 2,
   },
   postLikeBadge: {
     position: 'absolute',
@@ -945,7 +960,7 @@ const styles = StyleSheet.create({
   videoIndicator: {
     position: 'absolute',
     top: 6,
-    right: 6,
+    left: 6,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
     borderRadius: 10,
     width: 22,

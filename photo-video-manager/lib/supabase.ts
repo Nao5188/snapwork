@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storageService as localStorageService } from './storage';
 
-// Supabase設定
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 if (__DEV__ && (!supabaseUrl || !supabaseAnonKey)) {
@@ -33,6 +33,7 @@ export interface User {
 export interface Post {
   id: string;
   user_id: string;
+  store_id?: string | null;
   title: string;
   menu_name: string;
   media_url: string;
@@ -49,6 +50,24 @@ export interface PostMedia {
   is_video: boolean;
   display_order: number;
   created_at: string;
+}
+
+export interface Store {
+  id: string;
+  name: string;
+  invite_code: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoreMember {
+  id: string;
+  store_id: string;
+  user_id: string;
+  role: 'owner' | 'staff';
+  created_at: string;
+  store?: Store;
 }
 
 // ファイルアップロード関連の操作
@@ -218,7 +237,161 @@ export const fileStorageService = {
 };
 
 // ユーザー関連の操作
+const generateInviteCode = () => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+};
+
+export const storeService = {
+  async hasMembership(userId: string): Promise<boolean> {
+    try {
+      const { data, error } = await supabase
+        .from('store_members')
+        .select('id')
+        .eq('user_id', userId)
+        .limit(1);
+
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          return true;
+        }
+        throw error;
+      }
+
+      return (data ?? []).length > 0;
+    } catch (error) {
+      const storeError = error as { code?: string; message?: string };
+      if (
+        storeError.code === '42P01' ||
+        storeError.code === 'PGRST205' ||
+        storeError.message?.includes('store_members')
+      ) {
+        return true;
+      }
+
+      console.warn('Failed to check store membership:', error);
+      return true;
+    }
+  },
+
+  async getMyMemberships(userId: string): Promise<StoreMember[]> {
+    const { data, error } = await supabase
+      .from('store_members')
+      .select('id, store_id, user_id, role, created_at, store:stores(*)')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    return (data ?? []) as unknown as StoreMember[];
+  },
+
+  async getActiveStoreId(userId: string): Promise<string | null> {
+    const { data, error } = await supabase
+      .from('store_members')
+      .select('store_id')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (error.code === '42P01' || error.code === 'PGRST205') {
+        return null;
+      }
+      throw error;
+    }
+
+    return data?.store_id ?? null;
+  },
+
+  async createStore(userId: string, name: string): Promise<Store> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const inviteCode = generateInviteCode();
+      const { data, error } = await supabase.rpc('create_store_with_owner', {
+        p_store_name: name,
+        p_invite_code: inviteCode,
+      });
+
+      if (!error && data) {
+        return data as Store;
+      }
+
+      if (error?.code !== '23505') {
+        throw error;
+      }
+    }
+
+    throw new Error('招待コードの生成に失敗しました。もう一度お試しください。');
+  },
+
+  async joinStore(userId: string, inviteCode: string): Promise<StoreMember> {
+    const { data, error } = await supabase.rpc('join_store_by_invite_code', {
+      p_invite_code: inviteCode,
+    });
+
+    if (error) throw error;
+    return data as StoreMember;
+  },
+};
+
 export const userService = {
+  async ensureProfile(user: {
+    id: string;
+    email?: string | null;
+    user_metadata?: Record<string, any> | null;
+  }, userData?: { username?: string; display_name?: string }) {
+    const metadata = user.user_metadata ?? {};
+    const email = user.email ?? '';
+    const emailName = email.includes('@') ? email.split('@')[0] : '';
+    const rawUsername = userData?.username || metadata.username || emailName || `user_${user.id.slice(0, 8)}`;
+    const sanitizedUsername = rawUsername
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '')
+      .slice(0, 42);
+    const username = sanitizedUsername.length >= 3
+      ? sanitizedUsername
+      : `user_${user.id.slice(0, 8)}`;
+    const displayName = userData?.display_name ||
+      metadata.display_name ||
+      metadata.name ||
+      emailName ||
+      'ユーザー';
+
+    const { data: existingProfile, error: checkError } = await supabase
+      .from('users')
+      .select('id, username, display_name, avatar_url, email')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (checkError) {
+      throw checkError;
+    }
+
+    if (existingProfile) {
+      return existingProfile;
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert({
+        id: user.id,
+        email,
+        username,
+        display_name: displayName,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select('id, username, display_name, avatar_url, email')
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
   // ユーザープロフィール取得
   async getProfile(userId: string) {
     const { data, error } = await supabase
@@ -462,11 +635,18 @@ export const postService = {
     if (error) throw error;
   },
   // ユーザーの投稿一覧取得
-  async getUserPosts(userId: string) {
+  async getUserPosts(userId: string, storeId?: string | null) {
+    const activeStoreId = storeId ?? await storeService.getActiveStoreId(userId);
+
+    if (!activeStoreId) {
+      return [];
+    }
+
     const { data, error } = await supabase
       .from('posts')
       .select('*')
       .eq('user_id', userId)
+      .eq('store_id', activeStoreId)
       .order('created_at', { ascending: false });
     
     if (error) throw error;
@@ -474,11 +654,18 @@ export const postService = {
   },
 
   // ユーザーの投稿数取得
-  async getUserPostsCount(userId: string) {
+  async getUserPostsCount(userId: string, storeId?: string | null) {
+    const activeStoreId = storeId ?? await storeService.getActiveStoreId(userId);
+
+    if (!activeStoreId) {
+      return 0;
+    }
+
     const { count, error } = await supabase
       .from('posts')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .eq('store_id', activeStoreId);
     
     if (error) throw error;
     return count || 0;
@@ -486,10 +673,17 @@ export const postService = {
 
   // 投稿作成
   async createPost(post: Omit<Post, 'id' | 'created_at' | 'updated_at'>) {
+    const storeId = post.store_id ?? await storeService.getActiveStoreId(post.user_id);
+
+    if (!storeId) {
+      throw new Error('所属店舗が見つかりません。店舗を作成または参加してから投稿してください。');
+    }
+
     const { data, error } = await supabase
       .from('posts')
       .insert({
         ...post,
+        store_id: storeId,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -739,6 +933,12 @@ export const authService = {
     // Database Triggerがプロフィールを自動作成する
     // トリガーが SECURITY DEFINER で設定されているため、
     // auth.users への INSERT と同時にプロフィールが作成される
+    // 開発環境でトリガー未適用の場合に備え、セッションがある場合はクライアント側でも補完する
+    try {
+      await userService.ensureProfile(data.user, userData);
+    } catch (profileError) {
+      console.warn('Failed to ensure user profile after signup:', profileError);
+    }
 
     return data;
   },
@@ -765,7 +965,12 @@ export const authService = {
       }
 
       if (!profile) {
-        throw new Error('ユーザープロフィールが見つかりません。アカウントが正しく作成されていない可能性があります。');
+        try {
+          await userService.ensureProfile(data.user);
+        } catch (profileCreateError) {
+          console.error('Failed to create missing signed-in profile:', profileCreateError);
+          throw new Error('ユーザープロフィールが見つかりません。アカウントが正しく作成されていない可能性があります。');
+        }
       }
 
       // Remember Me設定を保存

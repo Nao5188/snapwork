@@ -12,6 +12,7 @@ import {
   Alert,
   ActionSheetIOS,
   Platform,
+  Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Video, ResizeMode } from 'expo-av';
@@ -20,8 +21,11 @@ import { Ionicons } from '@expo/vector-icons';
 import SkeletonLoader from './SkeletonLoader';
 import { useAppTheme } from '@/lib/ThemeContext';
 
-const { width } = Dimensions.get('window');
-const CARD_MEDIA_HEIGHT = width * 1.2;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CARD_HORIZONTAL_MARGIN = 10;
+const CARD_PADDING = 10;
+const MEDIA_WIDTH = SCREEN_WIDTH - CARD_HORIZONTAL_MARGIN * 2 - CARD_PADDING * 2;
+const DEFAULT_MEDIA_ASPECT_RATIO = 3 / 4;
 
 interface MediaItem {
   id: string;
@@ -34,7 +38,7 @@ interface UserProfile {
   id: string;
   username: string;
   display_name: string;
-  avatar_url?: string;
+  avatar_url?: string | null;
 }
 
 interface Post {
@@ -93,7 +97,6 @@ export default function PostCard({
   onEdit,
   onDelete,
   onDownload,
-  onLike,
   showActions = false,
   showProfile = true
 }: PostCardProps) {
@@ -102,6 +105,7 @@ export default function PostCard({
   const [imageLoading, setImageLoading] = useState<Set<string>>(new Set(['initial']));
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   const [videoThumbnails, setVideoThumbnails] = useState<Record<string, string>>({});
+  const [mediaAspectRatios, setMediaAspectRatios] = useState<Record<string, number>>({});
   const [reduceMotion, setReduceMotion] = useState(false);
   const { colors } = useAppTheme();
 
@@ -210,6 +214,34 @@ export default function PostCard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaItems]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    mediaItems.forEach((item) => {
+      if (!item.mediaUrl || item.isVideo || mediaAspectRatios[item.id]) {
+        return;
+      }
+
+      RNImage.getSize(
+        item.mediaUrl,
+        (imageWidth, imageHeight) => {
+          if (cancelled || imageWidth <= 0 || imageHeight <= 0) return;
+          const aspectRatio = imageWidth / imageHeight;
+          setMediaAspectRatios((prev) => (
+            prev[item.id] ? prev : { ...prev, [item.id]: aspectRatio }
+          ));
+        },
+        () => {
+          // 取得できない場合は仮比率のまま、画像自体はそのまま表示します。
+        }
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mediaItems, mediaAspectRatios]);
+
   const singleItem = mediaItems.length === 1 ? mediaItems[0] : null;
   const isSingleVideoPlaying = singleItem ? playingVideoId === singleItem.id : false;
 
@@ -222,9 +254,24 @@ export default function PostCard({
     return null;
   };
 
+  const categoryTags = useMemo(() => {
+    return (post.description || '')
+      .split(',')
+      .map((category) => category.trim())
+      .filter(Boolean)
+      .map((category) => category.startsWith('#') ? category : `#${category}`);
+  }, [post.description]);
+
+  const bodyText = (post.menuName || '').trim();
+  const currentMediaItem = mediaItems[currentMediaIndex] || singleItem || mediaItems[0] || null;
+  const currentMediaAspectRatio = currentMediaItem
+    ? mediaAspectRatios[currentMediaItem.id] || DEFAULT_MEDIA_ASPECT_RATIO
+    : DEFAULT_MEDIA_ASPECT_RATIO;
+  const mediaHeight = Math.round(MEDIA_WIDTH / currentMediaAspectRatio);
+
   const handleScroll = (event: any) => {
     const offsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(offsetX / width);
+    const index = Math.round(offsetX / MEDIA_WIDTH);
     setCurrentMediaIndex(index);
   };
 
@@ -268,11 +315,11 @@ export default function PostCard({
     }
   };
 
-  const renderMediaItem = ({ item, index }: { item: MediaItem; index: number }) => {
+  const renderMediaItem = ({ item }: { item: MediaItem; index: number }) => {
     const isPlaying = playingVideoId === item.id;
     return (
       <Pressable
-        style={styles.mediaItem}
+        style={[styles.mediaItem, { height: mediaHeight }]}
         onPress={item.isVideo
           ? () => setPlayingVideoId(isPlaying ? null : item.id)
           : undefined
@@ -315,13 +362,13 @@ export default function PostCard({
           <>
             {imageLoading.has(item.id) && (
               <View style={styles.skeletonContainer}>
-                <SkeletonLoader width="100%" height={CARD_MEDIA_HEIGHT} borderRadius={0} />
+                <SkeletonLoader width="100%" height={mediaHeight} borderRadius={0} />
               </View>
             )}
             <Image
               source={{ uri: item.mediaUrl }}
               style={[styles.mediaImage, imageLoading.has(item.id) && { opacity: 0 }]}
-              contentFit="cover"
+              contentFit="contain"
               onError={() => handleImageError(item.id)}
               onLoad={() => handleImageLoad(item.id)}
             />
@@ -336,20 +383,14 @@ export default function PostCard({
     );
   };
 
-  const renderDotIndicators = () => {
+  const renderMediaCounter = () => {
     if (mediaItems.length <= 1) return null;
 
     return (
-      <View style={styles.dotContainer}>
-        {mediaItems.map((_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.dot,
-              index === currentMediaIndex && styles.dotActive
-            ]}
-          />
-        ))}
+      <View style={styles.mediaCounter}>
+        <Text style={styles.mediaCounterText}>
+          {currentMediaIndex + 1}/{mediaItems.length}
+        </Text>
       </View>
     );
   };
@@ -362,6 +403,7 @@ export default function PostCard({
           opacity: fadeAnim,
           transform: [{ translateY: slideAnim }],
           backgroundColor: colors.surface,
+          borderColor: colors.borderLight,
         },
       ]}
     >
@@ -370,21 +412,29 @@ export default function PostCard({
         <View style={[styles.profileHeader, { backgroundColor: colors.surface }]}>
           {showProfile && post.userProfile ? (
             <TouchableOpacity style={styles.profileLeft} activeOpacity={0.7}>
-              <View style={[styles.avatarContainer, { borderColor: colors.borderLight }]}>
+              <View style={[styles.avatarContainer, { backgroundColor: colors.borderLight }]}>
                 {getAvatarSource() ? (
-                  <Image
-                    source={getAvatarSource()}
-                    style={styles.avatar}
-                    contentFit="cover"
-                  />
+                  <View style={styles.avatarClip}>
+                    <Image
+                      source={getAvatarSource()}
+                      style={styles.avatar}
+                      contentFit="cover"
+                    />
+                  </View>
                 ) : (
-                  <View style={[styles.defaultAvatar, { backgroundColor: colors.surface2 }]}>
-                    <Ionicons name="person" size={20} color={colors.textMuted} />
+                  <View style={[styles.avatarClip, styles.defaultAvatar, { backgroundColor: colors.surface2 }]}>
+                    <View style={[styles.defaultAvatarHead, { backgroundColor: colors.textMuted }]} />
+                    <View style={[styles.defaultAvatarBody, { backgroundColor: colors.textMuted }]} />
                   </View>
                 )}
               </View>
               <View style={styles.profileInfo}>
-                <Text style={[styles.displayName, { color: colors.text }]}>{post.userProfile.display_name}</Text>
+                <Text style={[styles.displayName, { color: colors.text }]} numberOfLines={1}>
+                  {post.userProfile.display_name || post.userProfile.username || 'ユーザー'}
+                </Text>
+                <Text style={[styles.profileTimestamp, { color: colors.textMuted }]}>
+                  {getRelativeTime(post.createdAt)}
+                </Text>
               </View>
             </TouchableOpacity>
           ) : (
@@ -404,7 +454,7 @@ export default function PostCard({
       ) : null}
 
       {/* Media */}
-      <View style={[styles.mediaContainer, { backgroundColor: colors.surface2 }]}>
+      <View style={[styles.mediaContainer, { backgroundColor: colors.surface2, height: mediaHeight }]}>
         {mediaItems.length > 0 ? (
           <>
             {mediaItems.length === 1 && singleItem ? (
@@ -452,7 +502,7 @@ export default function PostCard({
                   <Image
                     source={{ uri: singleItem.mediaUrl }}
                     style={styles.singleMediaImage}
-                    contentFit="cover"
+                    contentFit="contain"
                     onError={() => handleImageError(singleItem.id)}
                   />
                 )}
@@ -469,7 +519,7 @@ export default function PostCard({
                 keyExtractor={(item) => item.id}
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                snapToInterval={width}
+                snapToInterval={MEDIA_WIDTH}
                 decelerationRate="fast"
                 onScroll={handleScroll}
                 scrollEventThrottle={16}
@@ -477,7 +527,7 @@ export default function PostCard({
               />
             )}
 
-            {renderDotIndicators()}
+            {renderMediaCounter()}
           </>
         ) : (
           <View style={[styles.noMediaContainer, { backgroundColor: colors.surface2 }]}>
@@ -488,28 +538,22 @@ export default function PostCard({
       </View>
 
       {/* Post Info Card */}
-      <View style={[styles.postInfoCard, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-        {/* Title */}
+      <View style={[styles.postInfoCard, { backgroundColor: colors.surface }]}>
         {post.title && (
           <Text style={[styles.postTitle, { color: colors.text }]}>{post.title}</Text>
         )}
 
-        {/* Categories */}
-        {post.description && (
-          <View style={styles.categoriesContainer}>
-            {post.description.split(',').map((category, index) => (
-              <View key={index} style={[styles.categoryButton, { backgroundColor: colors.surface2 }]}>
-                <Text style={[styles.categoryButtonText, { color: colors.textSecondary }]}>{category.trim()}</Text>
-              </View>
-            ))}
-          </View>
-        )}
+        {bodyText ? (
+          <Text style={[styles.postBody, { color: colors.textSecondary }]} numberOfLines={2}>
+            {bodyText}
+          </Text>
+        ) : null}
 
-        {/* Timestamp */}
-        <View style={styles.timestampContainer}>
-          <Ionicons name="time-outline" size={13} color={colors.textMuted} />
-          <Text style={[styles.timestamp, { color: colors.textMuted }]}>{getRelativeTime(post.createdAt)}</Text>
-        </View>
+        {categoryTags.length > 0 && (
+          <Text style={styles.categoryText} numberOfLines={2}>
+            {categoryTags.join(' ')}
+          </Text>
+        )}
       </View>
     </Animated.View>
   );
@@ -518,13 +562,16 @@ export default function PostCard({
 const styles = StyleSheet.create({
   container: {
     backgroundColor: '#FFFFFF',
-    marginBottom: 16,
-    marginHorizontal: 0,
-    borderRadius: 0,
+    marginHorizontal: CARD_HORIZONTAL_MARGIN,
+    marginTop: 10,
+    marginBottom: 14,
+    padding: CARD_PADDING,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
     elevation: 2,
   },
   skeletonContainer: {
@@ -539,8 +586,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+    marginBottom: 10,
   },
   profileLeft: {
     flexDirection: 'row',
@@ -548,48 +596,72 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   avatarContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 10,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    padding: 2,
+    marginRight: 12,
+    backgroundColor: '#f5f5f5',
+  },
+  avatarClip: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 19,
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#fafafa',
   },
   defaultAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  defaultAvatarHead: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginBottom: 3,
+    opacity: 0.75,
+  },
+  defaultAvatarBody: {
+    width: 24,
+    height: 11,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    borderBottomLeftRadius: 5,
+    borderBottomRightRadius: 5,
+    opacity: 0.75,
   },
   profileInfo: {
     flex: 1,
   },
   displayName: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     color: '#444444',
-    letterSpacing: -0.2,
+    lineHeight: 20,
+  },
+  profileTimestamp: {
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 16,
+    marginTop: 1,
   },
   moreButton: {
-    padding: 8,
-    marginRight: -4,
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: -6,
   },
   mediaContainer: {
-    width: width,
-    height: CARD_MEDIA_HEIGHT,
+    width: '100%',
     position: 'relative',
     backgroundColor: '#fafafa',
-    marginHorizontal: 0,
-    borderRadius: 0,
+    borderRadius: 10,
     overflow: 'hidden',
   },
   singleMediaWrapper: {
@@ -607,8 +679,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   mediaItem: {
-    width: width,
-    height: CARD_MEDIA_HEIGHT,
+    width: MEDIA_WIDTH,
     position: 'relative',
   },
   mediaImage: {
@@ -632,26 +703,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  dotContainer: {
+  mediaCounter: {
     position: 'absolute',
-    bottom: 14,
-    width: '100%',
-    flexDirection: 'row',
+    top: 10,
+    right: 10,
+    minWidth: 42,
+    height: 26,
+    paddingHorizontal: 10,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0, 0, 0, 0.56)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
-    marginHorizontal: 3,
-  },
-  dotActive: {
-    backgroundColor: '#fff',
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  mediaCounterText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
   },
   noMediaContainer: {
     width: '100%',
@@ -680,43 +747,26 @@ const styles = StyleSheet.create({
   postInfoCard: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 0,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e5e5',
-  },
-  categoriesContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 8,
-  },
-  categoryButton: {
-    backgroundColor: '#f5f5f5',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  categoryButtonText: {
-    fontSize: 12,
-    color: '#444444',
-    fontWeight: '600',
+    paddingHorizontal: 4,
+    paddingTop: 12,
+    paddingBottom: 2,
   },
   postTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#444444',
-    marginBottom: 8,
-    letterSpacing: -0.3,
+    marginBottom: 4,
     lineHeight: 22,
   },
-  timestampContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+  postBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 4,
   },
-  timestamp: {
-    fontSize: 12,
-    color: '#999999',
+  categoryText: {
+    color: '#2F80D7',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
   },
 });

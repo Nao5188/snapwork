@@ -33,7 +33,6 @@ export default function ResetPasswordScreen() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
-  const logoScale = useRef(new Animated.Value(0.8)).current;
 
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
@@ -43,7 +42,6 @@ export default function ResetPasswordScreen() {
     if (reduceMotion) {
       fadeAnim.setValue(1);
       slideAnim.setValue(0);
-      logoScale.setValue(1);
       return;
     }
 
@@ -56,12 +54,6 @@ export default function ResetPasswordScreen() {
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 500,
-        useNativeDriver: true,
-      }),
-      Animated.spring(logoScale, {
-        toValue: 1,
-        friction: 8,
-        tension: 40,
         useNativeDriver: true,
       }),
     ]).start();
@@ -169,12 +161,13 @@ export default function ResetPasswordScreen() {
 
             {/* Header */}
             <View style={styles.header}>
-              <Animated.View style={[styles.appNameContainer, { transform: [{ scale: logoScale }] }]}>
-                <Text style={[styles.appNameSnap, { color: colors.text }]}>Snap</Text>
-                <Text style={[styles.appNameWork, { color: colors.text }]}>Work</Text>
-              </Animated.View>
-              <Text style={[styles.appTagline, { color: colors.textSecondary }]}>
-                {fromRecovery === '1' ? '新しいパスワードを設定' : 'パスワードを変更'}
+              <Text style={[styles.screenTitle, { color: colors.text }]}>
+                パスワードを変更
+              </Text>
+              <Text style={[styles.screenSubtitle, { color: colors.textSecondary }]}>
+                {fromRecovery === '1'
+                  ? '新しいパスワードを設定してください'
+                  : '新しいパスワードを入力してください'}
               </Text>
             </View>
 
@@ -230,7 +223,7 @@ export default function ResetPasswordScreen() {
                   title={loading ? '変更中...' : 'パスワードを変更する'}
                   onPress={handleSubmit}
                   loading={loading}
-                  gradient={gradients.primary}
+                  gradient={gradients.salonBlue}
                   style={styles.submitButton}
                 />
               </View>
@@ -292,26 +285,20 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 34,
   },
-  appNameContainer: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
+  screenTitle: {
+    fontSize: 30,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 0,
   },
-  appNameSnap: {
-    fontSize: 48,
-    fontWeight: '800',
-    letterSpacing: -1.5,
-  },
-  appNameWork: {
-    fontSize: 48,
-    fontWeight: '300',
-    letterSpacing: -1.5,
-  },
-  appTagline: {
+  screenSubtitle: {
     fontSize: 15,
+    lineHeight: 22,
     marginTop: 10,
-    letterSpacing: 0.3,
+    textAlign: 'center',
+    letterSpacing: 0,
   },
   formCard: {
     borderRadius: borderRadius.xl,

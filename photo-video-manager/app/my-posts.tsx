@@ -14,7 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { postService, authService, supabase } from '@/lib/supabase';
+import { postService, authService, supabase, storeService } from '@/lib/supabase';
 import PostCard from '@/components/PostCard';
 import { PostCardSkeleton } from '@/components/SkeletonLoader';
 import { useAppTheme } from '@/lib/ThemeContext';
@@ -75,6 +75,14 @@ export default function MyPostsScreen() {
         return;
       }
 
+      const activeStoreId = await storeService.getActiveStoreId(user.id);
+
+      if (!activeStoreId) {
+        setPosts([]);
+        router.replace('/store-onboarding');
+        return;
+      }
+
       const { data: currentProfile } = await supabase
         .from('users')
         .select('id, username, display_name, avatar_url')
@@ -86,6 +94,7 @@ export default function MyPostsScreen() {
         .from('posts')
         .select('*')
         .eq('user_id', user.id)
+        .eq('store_id', activeStoreId)
         .order('created_at', { ascending: false });
 
       if (postsError) {
@@ -250,7 +259,7 @@ export default function MyPostsScreen() {
       isVideo: item.is_video,
       createdAt: createdDate,
       shootingDate: createdDate,
-      description: undefined,
+      description: item.categories,
       likesCount: item.likes_count || 0,
       userProfile: item.users ? {
         id: item.user_id || '',
