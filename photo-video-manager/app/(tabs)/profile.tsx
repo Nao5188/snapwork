@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -13,13 +13,13 @@ import {
   ScrollView,
   Platform,
   Animated,
-  Image as RNImage,
   SafeAreaView,
   Pressable,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { authService, userService, postService, fileStorageService, storeService } from '@/lib/supabase';
@@ -33,6 +33,7 @@ const GRID_HORIZONTAL_PADDING = 16;
 const itemSize = (width - (GRID_HORIZONTAL_PADDING * 2) - (GRID_GAP * (numColumns - 1))) / numColumns;
 const PROFILE_ACCENT = '#2563EB';
 const PROFILE_ACCENT_SOFT = '#EEF4FF';
+const HEADER_LOGO = require('@/assets/images/HCINCLogo.png');
 
 interface UserPost {
   id: string;
@@ -42,6 +43,7 @@ interface UserPost {
   isVideo: boolean;
   createdAt: Date;
   likesCount: number;
+  reviewStatus?: string;
 }
 
 interface UserProfile {
@@ -50,6 +52,7 @@ interface UserProfile {
   displayName: string;
   avatar: string;
   postsCount: number;
+  adoptedPostsCount: number;
   storeName: string | null;
   role: 'owner' | 'staff' | null;
 }
@@ -73,10 +76,9 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    loadUserProfile();
     Animated.timing(fadeAnim, {
       toValue: 1,
-      duration: 600,
+      duration: 220,
       useNativeDriver: true,
     }).start();
     return () => {
@@ -85,7 +87,7 @@ export default function ProfileScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadUserProfile = async () => {
+  const loadUserProfile = useCallback(async () => {
     try {
       setLoading(true);
 
@@ -96,16 +98,17 @@ export default function ProfileScreen() {
         return;
       }
 
-      const [profile, posts, postsCount, memberships] = await Promise.all([
+      const [profile, posts, adoptedPostsCount, memberships] = await Promise.all([
         userService.getProfile(user.id),
         postService.getUserPosts(user.id),
-        postService.getUserPostsCount(user.id),
+        postService.getUserApprovedPostsCount(user.id),
         storeService.getMyMemberships(user.id).catch((storeError) => {
           console.warn('Failed to load store membership:', storeError);
           return [];
         }),
       ]);
       const primaryMembership = memberships[0] ?? null;
+      const postsCount = posts.length;
 
       let avatarUrl = profile.avatar_url;
 
@@ -121,6 +124,7 @@ export default function ProfileScreen() {
         displayName: profile.display_name,
         avatar: avatarUrl,
         postsCount: postsCount,
+        adoptedPostsCount: adoptedPostsCount,
         storeName: primaryMembership?.store?.name ?? null,
         role: primaryMembership?.role ?? null,
       });
@@ -133,6 +137,7 @@ export default function ProfileScreen() {
         isVideo: post.is_video,
         createdAt: new Date(post.created_at),
         likesCount: post.likes_count,
+        reviewStatus: post.review_status,
       }));
 
       setUserPosts(formattedPosts);
@@ -160,6 +165,7 @@ export default function ProfileScreen() {
           displayName: `ユーザー${fallbackUser.id.slice(-4)}`,
           avatar: `https://ui-avatars.com/api/?name=User&size=200&background=1a1a1a&color=fff`,
           postsCount: 0,
+          adoptedPostsCount: 0,
           storeName: null,
           role: null,
         });
@@ -169,7 +175,13 @@ export default function ProfileScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [router]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadUserProfile();
+    }, [loadUserProfile])
+  );
 
   const handleEditProfile = () => {
     if (!userProfile) return;
@@ -280,7 +292,10 @@ export default function ProfileScreen() {
             if (userProfile) {
               setUserProfile({
                 ...userProfile,
-                postsCount: Math.max(0, (userProfile.postsCount || 0) - 1)
+                postsCount: Math.max(0, (userProfile.postsCount || 0) - 1),
+                adoptedPostsCount: post.reviewStatus === 'approved'
+                  ? Math.max(0, (userProfile.adoptedPostsCount || 0) - 1)
+                  : userProfile.adoptedPostsCount,
               });
             }
             Alert.alert('削除完了', 'ポストを削除しました。');
@@ -362,6 +377,73 @@ export default function ProfileScreen() {
     );
   };
 
+  const renderTopBar = () => (
+    <View style={[styles.topBar, { backgroundColor: colors.headerBg, borderBottomColor: colors.border }]}>
+      <TouchableOpacity
+        style={styles.hamburgerButton}
+        onPress={() => setDrawerVisible(true)}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="menu" size={26} color={colors.text} />
+      </TouchableOpacity>
+      <Text style={[styles.headerTitle, { color: colors.text }]}>プロフィール</Text>
+      <Image
+        source={HEADER_LOGO}
+        style={styles.headerLogo}
+        contentFit="cover"
+        cachePolicy="memory-disk"
+        priority="high"
+        transition={0}
+      />
+    </View>
+  );
+
+  const renderLoadingHeader = () => (
+    <View style={[styles.header, { backgroundColor: colors.background }]}>
+      <View style={[styles.profilePanel, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+        <View style={styles.profileMainRow}>
+          <View style={[styles.avatarRing, { borderColor: colors.borderLight, backgroundColor: colors.surface2 }]} />
+          <View style={styles.loadingProfileInfo}>
+            <View style={[styles.loadingLine, styles.loadingNameLine, { backgroundColor: colors.surface2 }]} />
+            <View style={[styles.loadingLine, styles.loadingRoleLine, { backgroundColor: colors.surface2 }]} />
+            <View style={[styles.loadingLine, styles.loadingStoreLine, { backgroundColor: colors.surface2 }]} />
+          </View>
+        </View>
+        <View style={[styles.loadingEditButton, { backgroundColor: colors.surface2 }]} />
+        <View style={[styles.profileStats, { borderTopColor: colors.borderLight }]}>
+          <View style={styles.profileStatItem}>
+            <View style={[styles.loadingStatValue, { backgroundColor: colors.surface2 }]} />
+            <View style={[styles.loadingStatLabel, { backgroundColor: colors.surface2 }]} />
+          </View>
+          <View style={[styles.profileStatDivider, { backgroundColor: colors.borderLight }]} />
+          <View style={styles.profileStatItem}>
+            <View style={[styles.loadingStatValue, { backgroundColor: colors.surface2 }]} />
+            <View style={[styles.loadingStatLabel, { backgroundColor: colors.surface2 }]} />
+          </View>
+        </View>
+      </View>
+
+      <View style={[styles.postsHeader, { backgroundColor: colors.background }]}>
+        <View style={styles.postsHeaderLeft}>
+          <View style={[styles.loadingHeaderIcon, { backgroundColor: colors.surface2 }]} />
+          <View style={[styles.loadingPostsTitle, { backgroundColor: colors.surface2 }]} />
+        </View>
+        <View style={[styles.loadingPostsCount, { backgroundColor: colors.surface2 }]} />
+      </View>
+    </View>
+  );
+
+  const renderLoadingGrid = () => (
+    <View style={styles.loadingGrid}>
+      {Array.from({ length: 6 }, (_, index) => (
+        <View
+          key={`profile-loading-post-${index}`}
+          style={[styles.loadingGridItem, { backgroundColor: colors.surface2 }]}
+        />
+      ))}
+    </View>
+  );
+
   const renderHeader = () => {
     if (!userProfile) return null;
     const roleLabel = userProfile.role === 'owner'
@@ -420,6 +502,27 @@ export default function ProfileScreen() {
               <Ionicons name="create-outline" size={15} color={colors.text} />
               <Text style={[styles.cardEditButtonText, { color: colors.text }]} numberOfLines={1}>プロフィールを編集</Text>
             </TouchableOpacity>
+            <View
+              style={[
+                styles.profileStats,
+                { borderTopColor: colors.borderLight },
+              ]}
+              testID="profile-stats"
+            >
+              <View style={styles.profileStatItem}>
+                <Text style={[styles.profileStatValue, { color: colors.text }]} testID="profile-posts-count">
+                  {userProfile.postsCount}
+                </Text>
+                <Text style={[styles.profileStatLabel, { color: colors.textMuted }]}>投稿数</Text>
+              </View>
+              <View style={[styles.profileStatDivider, { backgroundColor: colors.borderLight }]} />
+              <View style={styles.profileStatItem}>
+                <Text style={[styles.profileStatValue, { color: colors.text }]} testID="profile-adopted-posts-count">
+                  {userProfile.adoptedPostsCount}
+                </Text>
+                <Text style={[styles.profileStatLabel, { color: colors.textMuted }]}>採用数</Text>
+              </View>
+            </View>
           </View>
         </View>
 
@@ -434,56 +537,31 @@ export default function ProfileScreen() {
     );
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.loadingContainer]}>
-        <View style={styles.loadingIcon}>
-          <Ionicons name="person-outline" size={32} color="#bbb" />
-        </View>
-        <Text style={styles.loadingText}>読み込み中...</Text>
-      </View>
-    );
-  }
-
-  if (!userProfile) {
-    return (
-      <View style={[styles.container, styles.loadingContainer]}>
-        <Text style={styles.loadingText}>プロフィールが見つかりません</Text>
-      </View>
-    );
-  }
+  const isInitialLoading = loading && !userProfile;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} testID="profile-screen">
       <DrawerMenu isVisible={drawerVisible} onClose={() => setDrawerVisible(false)} />
-      <View style={[styles.topBar, { backgroundColor: colors.headerBg, borderBottomColor: colors.border }]}>
-        <TouchableOpacity
-          style={styles.hamburgerButton}
-          onPress={() => setDrawerVisible(true)}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="menu" size={26} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>プロフィール</Text>
-        <RNImage
-          source={require('@/assets/images/HCINCLogo.png')}
-          style={styles.headerLogo}
-          resizeMode="cover"
-        />
-      </View>
+      {renderTopBar()}
 
       <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
-        <FlatList
-          data={userPosts}
-          renderItem={renderPostItem}
-          keyExtractor={(item) => item.id}
-          numColumns={numColumns}
-          ListHeaderComponent={renderHeader}
-          ListEmptyComponent={renderEmptyState}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
-        />
+        {!loading && !userProfile ? (
+          <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+            <Text style={[styles.loadingText, { color: colors.textMuted }]}>プロフィールが見つかりません</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={isInitialLoading ? [] : userPosts}
+            renderItem={renderPostItem}
+            keyExtractor={(item) => item.id}
+            numColumns={numColumns}
+            ListHeaderComponent={isInitialLoading ? renderLoadingHeader : renderHeader}
+            ListEmptyComponent={isInitialLoading ? renderLoadingGrid : renderEmptyState}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
+          />
+        )}
       </Animated.View>
 
       <Modal
@@ -667,6 +745,26 @@ const styles = StyleSheet.create({
     minWidth: 0,
     paddingRight: 148,
   },
+  loadingProfileInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 10,
+  },
+  loadingLine: {
+    borderRadius: 999,
+  },
+  loadingNameLine: {
+    width: '68%',
+    height: 22,
+  },
+  loadingRoleLine: {
+    width: 76,
+    height: 20,
+  },
+  loadingStoreLine: {
+    width: '52%',
+    height: 14,
+  },
   roleBadge: {
     alignSelf: 'flex-start',
     borderRadius: 999,
@@ -716,6 +814,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  profileStats: {
+    marginTop: 10,
+    paddingTop: 9,
+    minHeight: 38,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  profileStatItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 0,
+  },
+  profileStatValue: {
+    fontSize: 15,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  profileStatLabel: {
+    marginTop: 1,
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
+  },
+  profileStatDivider: {
+    width: 1,
+    height: 24,
+  },
+  loadingEditButton: {
+    alignSelf: 'flex-end',
+    width: 142,
+    height: 34,
+    borderRadius: 10,
+    marginTop: 14,
+  },
+  loadingStatValue: {
+    width: 34,
+    height: 16,
+    borderRadius: 8,
+    marginBottom: 5,
+  },
+  loadingStatLabel: {
+    width: 38,
+    height: 10,
+    borderRadius: 5,
+  },
   postsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -730,6 +875,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  loadingHeaderIcon: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+  },
+  loadingPostsTitle: {
+    width: 72,
+    height: 14,
+    borderRadius: 7,
+  },
+  loadingPostsCount: {
+    width: 30,
+    height: 13,
+    borderRadius: 7,
   },
   postsHeaderText: {
     fontSize: 15,
@@ -768,8 +928,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  loadingGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: GRID_GAP,
+    paddingHorizontal: GRID_HORIZONTAL_PADDING,
+    paddingTop: 2,
+    paddingBottom: 80,
+  },
+  loadingGridItem: {
+    width: itemSize,
+    height: itemSize,
+    borderRadius: 12,
   },
   loadingIcon: {
     width: 80,
@@ -830,7 +1004,7 @@ const styles = StyleSheet.create({
     color: '#ccc',
   },
   modalBody: {
-    flex: 1,
+    flexGrow: 0,
   },
   modalBodyContent: {
     paddingHorizontal: 22,

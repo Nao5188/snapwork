@@ -57,11 +57,14 @@ export default function GalleryScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const { colors } = useAppTheme();
   const returnToCreate = getSearchParam(params.returnToCreate) === '1';
+  const returnToEdit = getSearchParam(params.returnToEdit) === '1';
+  const editPostId = getSearchParam(params.editPostId);
   const existingMediaCount = Math.min(
     5,
     Math.max(0, Number(getSearchParam(params.existingMediaCount) ?? 0) || 0)
   );
-  const maxSelectableItems = returnToCreate ? Math.max(0, 5 - existingMediaCount) : 5;
+  const isAppendingMedia = returnToCreate || returnToEdit;
+  const maxSelectableItems = isAppendingMedia ? Math.max(0, 5 - existingMediaCount) : 5;
 
   const generateThumbnails = async (assets: MediaAsset[]) => {
     const videoAssets = assets.filter(a => a.is_video);
@@ -170,8 +173,19 @@ export default function GalleryScreen() {
       mediaTypes,
     };
 
-    if (returnToCreate) {
+    if (isAppendingMedia) {
       createParams.appendMedia = '1';
+    }
+
+    if (returnToEdit && editPostId) {
+      router.replace({
+        pathname: '/post/edit/[id]',
+        params: {
+          id: editPostId,
+          ...createParams,
+        },
+      } as any);
+      return;
     }
 
     router.push({
@@ -194,7 +208,7 @@ export default function GalleryScreen() {
     if (selectedItems.length > maxSelectableItems) {
       Alert.alert(
         '選択制限',
-        returnToCreate
+        isAppendingMedia
           ? `追加できるのはあと${maxSelectableItems}件までです。\n現在${selectedItems.length}件選択されています。`
           : `投稿作成では最大5枚まで選択できます。\n現在${selectedItems.length}枚選択されています。`,
         [
@@ -203,7 +217,7 @@ export default function GalleryScreen() {
             style: 'cancel',
           },
           {
-            text: `最初の${maxSelectableItems}件で${returnToCreate ? '追加' : '投稿'}`,
+            text: `最初の${maxSelectableItems}件で${isAppendingMedia ? '追加' : '投稿'}`,
             onPress: () => {
               const targetItems = selectedItems.slice(0, maxSelectableItems);
               const selectedAssets = mediaAssets.filter(asset => targetItems.includes(asset.id));
@@ -492,7 +506,7 @@ export default function GalleryScreen() {
                   <Text style={styles.deleteButtonText}>削除</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.createPostButton} onPress={handleCreatePost} activeOpacity={0.8}>
-                  <Text style={styles.createPostButtonText}>{returnToCreate ? '追加' : '投稿作成'}</Text>
+                  <Text style={styles.createPostButtonText}>{isAppendingMedia ? '追加' : '投稿作成'}</Text>
                   <Ionicons name="arrow-forward" size={18} color="white" />
                 </TouchableOpacity>
               </View>

@@ -15,6 +15,7 @@ import {
   ScrollView,
   Dimensions,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -27,6 +28,7 @@ import DrawerMenu from '@/components/DrawerMenu';
 import { useAppTheme } from '@/lib/ThemeContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const HEADER_LOGO = require('@/assets/images/HCINCLogo.png');
 
 interface PostHistoryItem {
   id: string;
@@ -593,10 +595,13 @@ export default function HistoryScreen() {
       <TouchableOpacity onPress={scrollToTop} activeOpacity={0.7} style={styles.headerTitleButton}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>タイムライン</Text>
       </TouchableOpacity>
-      <RNImage
-        source={require('@/assets/images/HCINCLogo.png')}
+      <Image
+        source={HEADER_LOGO}
         style={styles.headerLogo}
-        resizeMode="cover"
+        contentFit="cover"
+        cachePolicy="memory-disk"
+        priority="high"
+        transition={0}
       />
     </View>
   );
@@ -867,7 +872,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingVertical: 14,
     borderRadius: 14,
-    backgroundColor: '#444444',
+    backgroundColor: '#2563EB',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,

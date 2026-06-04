@@ -39,6 +39,7 @@ export interface Post {
   media_url: string;
   is_video: boolean;
   likes_count: number;
+  review_status?: 'pending' | 'approved' | 'revision_requested' | 'rejected';
   created_at: string;
   updated_at: string;
 }
@@ -668,6 +669,32 @@ export const postService = {
       .eq('store_id', activeStoreId);
     
     if (error) throw error;
+    return count || 0;
+  },
+
+  async getUserApprovedPostsCount(userId: string, storeId?: string | null) {
+    const activeStoreId = storeId ?? await storeService.getActiveStoreId(userId);
+
+    if (!activeStoreId) {
+      return 0;
+    }
+
+    const { count, error } = await supabase
+      .from('posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('store_id', activeStoreId)
+      .eq('review_status', 'approved');
+
+    if (error) {
+      if (error.code === '42703' || error.code === 'PGRST204' || error.message.includes('review_status')) {
+        console.warn('review_status column not available, returning 0 approved posts:', error.message);
+        return 0;
+      }
+
+      throw error;
+    }
+
     return count || 0;
   },
 

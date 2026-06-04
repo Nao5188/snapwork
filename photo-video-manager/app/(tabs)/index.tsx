@@ -53,11 +53,14 @@ export default function CameraScreen() {
   const [exposure, setExposure] = useState(0);
   const [appState, setAppState] = useState(AppState.currentState);
   const returnToCreate = getSearchParam(params.returnToCreate) === '1';
+  const returnToEdit = getSearchParam(params.returnToEdit) === '1';
+  const editPostId = getSearchParam(params.editPostId);
   const existingMediaCount = Math.min(
     5,
     Math.max(0, Number(getSearchParam(params.existingMediaCount) ?? 0) || 0)
   );
-  const captureLimit = returnToCreate ? Math.max(1, 5 - existingMediaCount) : 5;
+  const isAppendingMedia = returnToCreate || returnToEdit;
+  const captureLimit = isAppendingMedia ? Math.max(1, 5 - existingMediaCount) : 5;
   const isCameraActive = isFocused && appState === 'active';
 
   const cameraRef = useRef<Camera>(null);
@@ -144,9 +147,11 @@ export default function CameraScreen() {
   };
 
   useEffect(() => {
-    if (!isCameraActive) {
+    if (!isCameraActive || !isCameraReady) {
       cameraCaptureService.unregister();
-      setIsCameraReady(false);
+      if (!isCameraActive) {
+        setIsCameraReady(false);
+      }
       return;
     }
 
@@ -267,18 +272,32 @@ export default function CameraScreen() {
         mediaTypes,
       };
 
-      if (returnToCreate) {
+      if (isAppendingMedia) {
         createParams.appendMedia = '1';
       }
 
       capturedMediaRef.current = [];
-      if (returnToCreate) {
+      if (isAppendingMedia) {
         router.setParams({
           returnToCreate: undefined,
+          returnToEdit: undefined,
+          editPostId: undefined,
           appendMedia: undefined,
           existingMediaCount: undefined,
         } as any);
       }
+
+      if (returnToEdit && editPostId) {
+        router.replace({
+          pathname: '/post/edit/[id]',
+          params: {
+            id: editPostId,
+            ...createParams,
+          },
+        } as any);
+        return;
+      }
+
       router.push({
         pathname: '/post/create',
         params: createParams,
@@ -287,7 +306,7 @@ export default function CameraScreen() {
       console.error('Failed to prepare media for post:', error);
       Alert.alert('エラー', '投稿作成の準備に失敗しました。もう一度お試しください。');
     });
-  }, [captureLimit, returnToCreate, router]);
+  }, [captureLimit, editPostId, isAppendingMedia, returnToEdit, router]);
 
   const showCapturedMediaPrompt = useCallback((latestMedia: CapturedMedia) => {
     const nextItems = [...capturedMediaRef.current, latestMedia].slice(-captureLimit);
@@ -296,7 +315,7 @@ export default function CameraScreen() {
     const count = nextItems.length;
     const mediaLabel = latestMedia.type === 'video' ? '動画' : '写真';
     const canContinue = count < captureLimit;
-    const submitLabel = returnToCreate ? '追加' : '投稿';
+    const submitLabel = isAppendingMedia ? '追加' : '投稿';
 
     const actions = canContinue
       ? [
@@ -309,12 +328,12 @@ export default function CameraScreen() {
 
     Alert.alert(
       `${mediaLabel}を保存しました`,
-      returnToCreate
+      isAppendingMedia
         ? `${count}件のメディアを保存しました。投稿に追加しますか？`
         : `${count}件のメディアを保存しました。投稿作成へ進みますか？`,
       actions
     );
-  }, [captureLimit, openPostCreateWithCapturedMedia, returnToCreate]);
+  }, [captureLimit, isAppendingMedia, openPostCreateWithCapturedMedia]);
 
   const getCameraErrorMessage = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -338,7 +357,7 @@ export default function CameraScreen() {
     }
 
     if (!cameraRef.current || !isCameraReady) {
-      Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
+      console.log('[Camera] Capture ignored until camera is ready.');
       return;
     }
 
@@ -366,7 +385,7 @@ export default function CameraScreen() {
 
   const recordVideo = useCallback(async () => {
     if (!cameraRef.current || !isCameraReady) {
-      Alert.alert('カメラ準備中', 'カメラの準備が完了するまでお待ちください。');
+      console.log('[Camera] Recording ignored until camera is ready.');
       return;
     }
 
@@ -470,20 +489,38 @@ export default function CameraScreen() {
           <TouchableOpacity
             style={styles.topButton}
             onPress={() => {
-              if (returnToCreate) {
+              if (isAppendingMedia) {
                 router.setParams({
                   returnToCreate: undefined,
+                  returnToEdit: undefined,
+                  editPostId: undefined,
                   appendMedia: undefined,
                   existingMediaCount: undefined,
                 } as any);
-                router.push({
-                  pathname: '/gallery',
-                  params: {
-                    returnToCreate: '1',
-                    appendMedia: '1',
-                    existingMediaCount: String(existingMediaCount),
-                  },
-                } as any);
+
+                const galleryParams: Record<string, string> = {
+                  appendMedia: '1',
+                  existingMediaCount: String(existingMediaCount),
+                };
+
+                if (returnToEdit && editPostId) {
+                  galleryParams.returnToEdit = '1';
+                  galleryParams.editPostId = editPostId;
+                } else {
+                  galleryParams.returnToCreate = '1';
+                }
+
+                if (returnToEdit) {
+                  router.replace({
+                    pathname: '/gallery',
+                    params: galleryParams,
+                  } as any);
+                } else {
+                  router.push({
+                    pathname: '/gallery',
+                    params: galleryParams,
+                  } as any);
+                }
                 return;
               }
               router.push('/gallery');
@@ -564,6 +601,7 @@ export default function CameraScreen() {
               resizeMode="contain"
               photoQualityBalance={currentMode === 'picture' ? 'quality' : undefined}
               onInitialized={() => setIsCameraReady(true)}
+              onStarted={() => setIsCameraReady(true)}
               onStopped={() => setIsCameraReady(false)}
               onError={(error) => {
                 console.error('Camera error:', error);
@@ -571,6 +609,12 @@ export default function CameraScreen() {
               }}
             />
           </GestureDetector>
+
+          {isCameraActive && !isCameraReady && (
+            <View style={styles.cameraPreparingOverlay} pointerEvents="none">
+              <Text style={styles.cameraPreparingText}>カメラ準備中...</Text>
+            </View>
+          )}
 
           {/* Grid */}
           {showGrid && (
@@ -694,6 +738,23 @@ const styles = StyleSheet.create({
   },
   camera: {
     ...StyleSheet.absoluteFillObject,
+  },
+  cameraPreparingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    zIndex: 8,
+  },
+  cameraPreparingText: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 14,
+    fontWeight: '700',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: 'rgba(10,12,18,0.62)',
+    overflow: 'hidden',
   },
   topControls: {
     position: 'absolute',

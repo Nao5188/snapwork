@@ -39,7 +39,7 @@ const MEDIA_ITEM_SIZE = Math.min(
   )
 );
 
-const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント', 'ヘッドスパ'];
+const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
 const CREATE_POST_DRAFT_KEY = 'create_post_media_draft';
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -48,7 +48,6 @@ const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   パーマ: 'water-outline',
   縮毛: 'sparkles-outline',
   トリートメント: 'flask-outline',
-  ヘッドスパ: 'happy-outline',
 };
 
 interface MediaItem {
