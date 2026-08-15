@@ -1,39 +1,35 @@
 # EAS Build 作業状況
 
-## 現在の状態
+最終更新: 2026-08-16
 
-### Developmentビルド（進行中）
-- **Build ID**: 90294410-0cc6-4ea9-9bc5-73472cc4e54b
-- **Status**: in queue（Free tierのため完了まで約70分）
-- **Build number**: 12
-- **完了後の作業**:
-  1. メール or Expoダッシュボードでインストールリンクを確認
-  2. iPhoneのSafariでリンクを開いてインストール
-  3. PCで `npm start` を実行
-  4. iPhoneでアプリを開く → 開発サーバーに接続される
+## iOS Production
 
-### Productionビルド（完了済み）
-- **Build ID**: f67951e1-a57f-4f0c-914c-8148d3d690d7
-- **Build number**: 11
-- **完了時刻**: 2026/3/24 2:49:15
-- **Status**: finished ✅
-- **次のステップ**: App Store Connect へ Submit（未実施）
+- App version: `1.0.0`
+- Build number: `54`
+- Build ID: `b4de23c9-7d93-4c42-ba38-09c021e5dcf0`
+- Commit: `911d444` (`Prepare SalonCloud production release`)
+- Build status: `FINISHED`
+- Submission ID: `b8c1073d-f4b2-4082-a908-5aa42146d327`
+- Submission status: App Store Connectへのアップロード完了、Apple側で処理中
 
----
+## 次の作業
 
-## 未解決の問題
+1. App Store ConnectのTestFlightでBuild 54の処理完了を確認する。
+2. TestFlightで投稿、動画サムネイル、認証、カメラ、ダウンロードを確認する。
+3. App Store ConnectでBuild 54をリリース対象バージョンへ設定する。
+4. リリースノートと審査情報を確認し、App Reviewへ提出する。
 
-### 写真撮影エラー
-- **症状**: 撮影するとポップアップ「写真の撮影に失敗しました」が表示される
-- **対処済み**:
-  - `enableShutterSound: true` を削除
-  - エラー詳細をポップアップに表示するよう変更
-- **次のステップ**: devビルドインストール後に撮影して、エラーの詳細メッセージを確認する
+## 検証結果
 
----
+- `npx expo-doctor`: 17/17 checks passed
+- `npx tsc --noEmit`: passed
+- `npm run lint`: passed
+- iOS Expo export: passed
+- EAS production環境変数: Supabase URLとanon keyを確認済み
+- Supabase Storage: `posts`と`avatars`はprivate、孤立ファイルなし
+- 動画サムネイル: 24/27。過去3件はアプリの自動修復対象
 
-## メモ
+## 既知事項
 
-- Expo Go は使用不可（react-native-vision-camera がカスタムネイティブモジュールのため）
-- Development Build = アプリ独自の「開発用Expo Go」
-- ネイティブコード変更時のみ再ビルドが必要、通常のコード変更は `npm start` で即反映
+- `npm audit --omit=dev`は27件を報告する。残りの自動修正にはExpo 57への破壊的更新が含まれるため、今回のリリースには含めない。
+- Expo Goは`react-native-vision-camera`を利用できないため、実機確認にはTestFlightまたはDevelopment Buildを使用する。
