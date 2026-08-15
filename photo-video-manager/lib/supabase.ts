@@ -1,8 +1,21 @@
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storageService as localStorageService } from './storage';
+import { emitActiveStoreChanged } from './activeStoreEvents';
+import { secureAuthStorage } from './secureAuthStorage';
+import type { StoreMemberRole } from './storeRoles';
+import {
+  createLocalMediaThumbnail,
+  createOptimizedAvatar,
+  getMediaThumbnailPath,
+  getPostStoragePathFromUrl,
+  type MediaType,
+} from './mediaThumbnails';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+const ACTIVE_STORE_KEY_PREFIX = 'active_store_id:';
+
+const getActiveStoreKey = (userId: string) => `${ACTIVE_STORE_KEY_PREFIX}${userId}`;
 
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
@@ -12,19 +25,27 @@ if (__DEV__ && (!supabaseUrl || !supabaseAnonKey)) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: AsyncStorage,
+    storage: secureAuthStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
   },
 });
 
+const getPrivateStorageObjectUrl = (bucket: 'posts' | 'avatars', path: string) => {
+  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+  return data.publicUrl.replace(
+    `/storage/v1/object/public/${bucket}/`,
+    `/storage/v1/object/authenticated/${bucket}/`,
+  );
+};
+
 // データベーステーブル型定義
 export interface User {
   id: string;
   username: string;
   display_name: string;
-  avatar_url?: string;
+  avatar_url?: string | null;
   email: string;
   created_at: string;
   updated_at: string;
@@ -56,7 +77,7 @@ export interface PostMedia {
 export interface Store {
   id: string;
   name: string;
-  invite_code: string;
+  invite_code?: string;
   owner_id: string;
   created_at: string;
   updated_at: string;
@@ -66,7 +87,7 @@ export interface StoreMember {
   id: string;
   store_id: string;
   user_id: string;
-  role: 'owner' | 'staff';
+  role: StoreMemberRole;
   created_at: string;
   store?: Store;
 }
@@ -76,13 +97,13 @@ export const fileStorageService = {
   // アバター画像をアップロード
   async uploadAvatar(userId: string, imageUri: string) {
     try {
-      // ファイル拡張子を取得
-      const fileExtension = imageUri.split('.').pop()?.split('?')[0] || 'jpg';
+      const optimizedImageUri = await createOptimizedAvatar(imageUri);
+      const fileExtension = 'jpg';
       // ユーザーIDをフォルダとして使用し、RLSポリシーと一致させる
       const fileName = `${userId}/avatar_${Date.now()}.${fileExtension}`;
 
       // fetchを使用してローカルファイルを読み込み、blobに変換
-      const response = await fetch(imageUri);
+      const response = await fetch(optimizedImageUri);
 
       if (!response.ok) {
         throw new Error(`Failed to fetch image: ${response.statusText}`);
@@ -113,7 +134,8 @@ export const fileStorageService = {
       const { error } = await supabase.storage
         .from('avatars')
         .upload(fileName, uint8Array, {
-          contentType: blob.type || `image/${fileExtension}`,
+          contentType: 'image/jpeg',
+          cacheControl: '31536000',
           upsert: true
         });
 
@@ -122,12 +144,8 @@ export const fileStorageService = {
         throw error;
       }
 
-      // 公開URLを取得
-      const { data: publicUrlData } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(fileName);
-
-      return publicUrlData.publicUrl;
+      // 非公開オブジェクトを示す永続URLを保存し、表示時に署名URLへ変換する
+      return getPrivateStorageObjectUrl('avatars', fileName);
     } catch (error) {
       console.error('Failed to upload avatar:', error);
       throw error;
@@ -144,12 +162,15 @@ export const fileStorageService = {
       // URLから Supabase Storage のパスを抽出
       // 形式: https://xxx.supabase.co/storage/v1/object/public/avatars/userId/filename.ext
       const url = new URL(avatarUrl);
-      const publicPathPrefix = '/storage/v1/object/public/avatars/';
-      const filePath = url.pathname.startsWith(publicPathPrefix)
-        ? url.pathname.slice(publicPathPrefix.length)
-        : url.pathname.split('/').slice(-2).join('/');
-
-      console.log('Deleting old avatar:', filePath);
+      const avatarPathPrefixes = [
+        '/storage/v1/object/public/avatars/',
+        '/storage/v1/object/sign/avatars/',
+        '/storage/v1/object/authenticated/avatars/',
+      ];
+      const avatarPathPrefix = avatarPathPrefixes.find(prefix => url.pathname.startsWith(prefix));
+      const filePath = avatarPathPrefix
+        ? decodeURIComponent(url.pathname.slice(avatarPathPrefix.length))
+        : url.pathname.split('/').slice(-2).map(decodeURIComponent).join('/');
 
       const { error } = await supabase.storage
         .from('avatars')
@@ -165,8 +186,71 @@ export const fileStorageService = {
     }
   },
 
+  async deletePostMedia(mediaUrls: string[]) {
+    const paths = new Set<string>();
+
+    mediaUrls.forEach((mediaUrl) => {
+      const originalPath = getPostStoragePathFromUrl(mediaUrl);
+      if (!originalPath) return;
+
+      paths.add(originalPath);
+      paths.add(getMediaThumbnailPath(originalPath));
+    });
+
+    if (paths.size === 0) return;
+
+    const { error } = await supabase.storage
+      .from('posts')
+      .remove([...paths]);
+
+    if (error) throw error;
+  },
+
+  async ensurePostVideoThumbnail(mediaUrl: string): Promise<string | null> {
+    const originalPath = getPostStoragePathFromUrl(mediaUrl);
+    if (!originalPath) return null;
+
+    const thumbnailPath = getMediaThumbnailPath(originalPath);
+
+    try {
+      const { data: signedOriginal } = await supabase.storage
+        .from('posts')
+        .createSignedUrl(originalPath, 300);
+      const thumbnailSourceUri = signedOriginal?.signedUrl ?? mediaUrl;
+      const thumbnailUri = await createLocalMediaThumbnail(thumbnailSourceUri, 'video');
+      const thumbnailResponse = await fetch(thumbnailUri);
+
+      if (!thumbnailResponse.ok) {
+        throw new Error(`Failed to fetch thumbnail: ${thumbnailResponse.statusText}`);
+      }
+
+      const thumbnailBuffer = await thumbnailResponse.arrayBuffer();
+      const { error } = await supabase.storage
+        .from('posts')
+        .upload(thumbnailPath, new Uint8Array(thumbnailBuffer), {
+          contentType: 'image/jpeg',
+          cacheControl: '31536000',
+          upsert: true,
+        });
+
+      if (error) throw error;
+
+      const refreshedUrl = new URL(getPrivateStorageObjectUrl('posts', thumbnailPath));
+      refreshedUrl.searchParams.set('v', Date.now().toString());
+      return refreshedUrl.toString();
+    } catch (error) {
+      console.warn('Failed to ensure post video thumbnail:', error);
+      throw error;
+    }
+  },
+
   // 投稿画像をアップロード
-  async uploadPostImage(userId: string, imageUri: string, postId?: string): Promise<string> {
+  async uploadPostImage(
+    userId: string,
+    imageUri: string,
+    postId?: string,
+    mediaType?: MediaType
+  ): Promise<string> {
     try {
       // すでに公開URLの場合はそのまま返す
       if (imageUri.startsWith('https://') || imageUri.startsWith('http://')) {
@@ -209,13 +293,15 @@ export const fileStorageService = {
 
       // Supabase Storageにアップロード (posts バケットを使用)
       const videoExtensions = ['mp4', 'mov', 'avi', 'webm', 'm4v'];
-      const isVideoFile = videoExtensions.includes(fileExtension.toLowerCase());
+      const isVideoFile = mediaType === 'video'
+        || videoExtensions.includes(fileExtension.toLowerCase());
       const contentType = blob.type || (isVideoFile ? `video/${fileExtension}` : `image/${fileExtension}`);
 
       const { error } = await supabase.storage
         .from('posts')
         .upload(fileName, uint8Array, {
           contentType,
+          cacheControl: '31536000',
           upsert: true
         });
 
@@ -224,27 +310,43 @@ export const fileStorageService = {
         throw error;
       }
 
-      // 公開URLを取得
-      const { data: publicUrlData } = supabase.storage
-        .from('posts')
-        .getPublicUrl(fileName);
+      // 非公開オブジェクトを示す永続URLを保存し、表示時に署名URLへ変換する
+      const privateObjectUrl = getPrivateStorageObjectUrl('posts', fileName);
 
-      return publicUrlData.publicUrl;
+      try {
+        const thumbnailUri = await createLocalMediaThumbnail(
+          imageUri,
+          isVideoFile ? 'video' : 'photo'
+        );
+        const thumbnailResponse = await fetch(thumbnailUri);
+
+        if (!thumbnailResponse.ok) {
+          throw new Error(`Failed to fetch thumbnail: ${thumbnailResponse.statusText}`);
+        }
+
+        const thumbnailBuffer = await thumbnailResponse.arrayBuffer();
+        const thumbnailPath = getMediaThumbnailPath(fileName);
+        const { error: thumbnailError } = await supabase.storage
+          .from('posts')
+          .upload(thumbnailPath, new Uint8Array(thumbnailBuffer), {
+            contentType: 'image/jpeg',
+            cacheControl: '31536000',
+            upsert: true,
+          });
+
+        if (thumbnailError) {
+          throw thumbnailError;
+        }
+      } catch (thumbnailError) {
+        console.warn('Failed to create or upload media thumbnail:', thumbnailError);
+      }
+
+      return privateObjectUrl;
     } catch (error) {
       console.error('Failed to upload post image:', error);
       throw error;
     }
   },
-};
-
-// ユーザー関連の操作
-const generateInviteCode = () => {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return code;
 };
 
 export const storeService = {
@@ -282,7 +384,7 @@ export const storeService = {
   async getMyMemberships(userId: string): Promise<StoreMember[]> {
     const { data, error } = await supabase
       .from('store_members')
-      .select('id, store_id, user_id, role, created_at, store:stores(*)')
+      .select('id, store_id, user_id, role, created_at, store:stores(id, name, owner_id, created_at, updated_at)')
       .eq('user_id', userId)
       .order('created_at', { ascending: true });
 
@@ -290,14 +392,30 @@ export const storeService = {
     return (data ?? []) as unknown as StoreMember[];
   },
 
+  async getStoreNumber(storeId: string): Promise<string | null> {
+    const { data, error } = await supabase.rpc('get_store_number', {
+      p_store_id: storeId,
+    });
+
+    if (error?.code === 'PGRST202' || error?.message?.includes('get_store_number')) {
+      const fallbackResult = await supabase.rpc('get_owner_store_invite_code', {
+        p_store_id: storeId,
+      });
+
+      if (fallbackResult.error) throw fallbackResult.error;
+      return typeof fallbackResult.data === 'string' ? fallbackResult.data : null;
+    }
+
+    if (error) throw error;
+    return typeof data === 'string' ? data : null;
+  },
+
   async getActiveStoreId(userId: string): Promise<string | null> {
     const { data, error } = await supabase
       .from('store_members')
       .select('store_id')
       .eq('user_id', userId)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order('created_at', { ascending: true });
 
     if (error) {
       if (error.code === '42P01' || error.code === 'PGRST205') {
@@ -306,27 +424,60 @@ export const storeService = {
       throw error;
     }
 
-    return data?.store_id ?? null;
+    const memberships = data ?? [];
+    if (memberships.length === 0) return null;
+
+    const storedStoreId = await AsyncStorage.getItem(getActiveStoreKey(userId));
+    const activeStoreId = memberships.some(member => member.store_id === storedStoreId)
+      ? storedStoreId
+      : memberships[0].store_id;
+
+    if (activeStoreId && activeStoreId !== storedStoreId) {
+      await AsyncStorage.setItem(getActiveStoreKey(userId), activeStoreId);
+    }
+
+    return activeStoreId;
+  },
+
+  async setActiveStoreId(userId: string, storeId: string): Promise<void> {
+    const { data, error } = await supabase
+      .from('store_members')
+      .select('store_id')
+      .eq('user_id', userId)
+      .eq('store_id', storeId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) {
+      throw new Error('この店舗を表示する権限がありません。');
+    }
+
+    await AsyncStorage.setItem(getActiveStoreKey(userId), storeId);
+    emitActiveStoreChanged({ storeId, userId });
+  },
+
+  async updateStoreName(userId: string, storeId: string, name: string): Promise<Store> {
+    const { data, error } = await supabase.rpc('store_owner_update_store_name', {
+      p_store_id: storeId,
+      p_store_name: name,
+    });
+
+    if (error) throw error;
+    const store = data as Store;
+    emitActiveStoreChanged({ storeId, userId });
+    return store;
   },
 
   async createStore(userId: string, name: string): Promise<Store> {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const inviteCode = generateInviteCode();
-      const { data, error } = await supabase.rpc('create_store_with_owner', {
-        p_store_name: name,
-        p_invite_code: inviteCode,
-      });
+    const { data, error } = await supabase.rpc('create_store_with_owner', {
+      p_store_name: name,
+    });
 
-      if (!error && data) {
-        return data as Store;
-      }
+    if (error) throw error;
 
-      if (error?.code !== '23505') {
-        throw error;
-      }
-    }
-
-    throw new Error('招待コードの生成に失敗しました。もう一度お試しください。');
+    const store = data as Store;
+    await this.setActiveStoreId(userId, store.id);
+    return store;
   },
 
   async joinStore(userId: string, inviteCode: string): Promise<StoreMember> {
@@ -335,7 +486,9 @@ export const storeService = {
     });
 
     if (error) throw error;
-    return data as StoreMember;
+    const membership = data as StoreMember;
+    await this.setActiveStoreId(userId, membership.store_id);
+    return membership;
   },
 };
 
@@ -422,7 +575,6 @@ export const userService = {
     let finalUpdates = { ...updates };
     if (updates.avatar_url && updates.avatar_url.startsWith('file://')) {
       try {
-        console.log('Auto-uploading local avatar to Supabase Storage:', updates.avatar_url);
         const publicUrl = await fileStorageService.uploadAvatar(userId, updates.avatar_url);
         finalUpdates.avatar_url = publicUrl;
         
@@ -435,7 +587,7 @@ export const userService = {
           }
         }
       } catch (uploadError) {
-        console.warn('Failed to auto-upload avatar, using original URL:', uploadError);
+        console.warn('Failed to auto-upload avatar:', uploadError);
         // アップロードに失敗した場合は元のURLを使用
       }
     }
@@ -490,8 +642,6 @@ export const userService = {
   // 欠落しているユーザープロフィールを作成（通常のアプリ内では使用しない）
   async createMissingUserProfile(userId: string, email?: string) {
     try {
-      console.log(`🔍 Checking for existing profile for user: ${userId}`);
-      
       // 既存プロフィールをチェック（完全なデータを取得）
       const { data: existingProfile, error: checkError } = await supabase
         .from('users')
@@ -505,13 +655,9 @@ export const userService = {
       }
 
       if (existingProfile) {
-        console.log(`✅ Profile already exists for ${userId}:`, existingProfile);
         return existingProfile; // 既に存在する場合はそのまま返す
       }
 
-      console.log(`❌ No profile found for ${userId}. RLS prevents profile creation from client.`);
-      console.log(`⚠️  Please run the fixMissingUserProfiles.js script with service role key.`);
-      
       // RLSポリシーにより通常のクライアントからは作成できないため、nullを返す
       return null;
     } catch (error) {
@@ -523,8 +669,6 @@ export const userService = {
   // 既存のローカル画像を一括でSupabase Storageに移行
   async migrateLocalAvatarsToStorage() {
     try {
-      console.log('Starting avatar migration to Supabase Storage...');
-      
       // ローカルファイルパスを持つユーザーを取得
       const { data: usersWithLocalAvatars, error } = await supabase
         .from('users')
@@ -537,19 +681,14 @@ export const userService = {
       }
 
       if (!usersWithLocalAvatars || usersWithLocalAvatars.length === 0) {
-        console.log('No users with local avatars found');
         return { success: true, migrated: 0 };
       }
 
-      console.log(`Found ${usersWithLocalAvatars.length} users with local avatars`);
-      
       let successCount = 0;
       let errorCount = 0;
 
       for (const user of usersWithLocalAvatars) {
         try {
-          console.log(`Migrating avatar for user ${user.username} (${user.id})`);
-          
           // ローカル画像をアップロード
           const publicUrl = await fileStorageService.uploadAvatar(user.id, user.avatar_url);
           
@@ -563,19 +702,17 @@ export const userService = {
             .eq('id', user.id);
 
           if (updateError) {
-            console.error(`Failed to update user ${user.id}:`, updateError);
+            console.error('Failed to update migrated avatar profile:', updateError);
             errorCount++;
           } else {
-            console.log(`Successfully migrated avatar for user ${user.username}`);
             successCount++;
           }
         } catch (migrationError) {
-          console.error(`Failed to migrate avatar for user ${user.id}:`, migrationError);
+          console.error('Failed to migrate avatar:', migrationError);
           errorCount++;
         }
       }
 
-      console.log(`Migration completed: ${successCount} success, ${errorCount} errors`);
       return { 
         success: true, 
         migrated: successCount, 
@@ -735,7 +872,7 @@ export const postService = {
 
     const { data: post } = await supabase
       .from('posts')
-      .select('user_id')
+      .select('user_id, media_url, menu_name')
       .eq('id', postId)
       .single();
 
@@ -747,12 +884,35 @@ export const postService = {
       throw new Error('この投稿を削除する権限がありません');
     }
 
+    const { data: postMedia } = await supabase
+      .from('post_media')
+      .select('media_url')
+      .eq('post_id', postId);
+
+    const legacyExtraUrls = post.menu_name?.includes('|EXTRA_MEDIA:')
+      ? post.menu_name.match(/\|EXTRA_MEDIA:(.+)$/)?.[1]
+        ?.split(',')
+        .map((url: string) => url.trim())
+        .filter(Boolean) ?? []
+      : [];
+    const mediaUrls = [
+      post.media_url,
+      ...(postMedia ?? []).map(item => item.media_url),
+      ...legacyExtraUrls,
+    ].filter((url): url is string => Boolean(url));
+
     const { error } = await supabase
       .from('posts')
       .delete()
       .eq('id', postId);
 
     if (error) throw error;
+
+    try {
+      await fileStorageService.deletePostMedia(mediaUrls);
+    } catch (storageError) {
+      console.warn('Post deleted, but its Storage files could not be removed:', storageError);
+    }
   },
 
   // 投稿のメディアを取得
@@ -783,11 +943,7 @@ export const postService = {
     display_order: number;
   }[]) {
     try {
-      console.log(`=== SETTING POST MEDIA FOR ${postId} ===`);
-      console.log('Media items to insert:', mediaItems);
-
       // まず既存のメディアを削除
-      console.log('Deleting existing media...');
       const { error: deleteError } = await supabase
         .from('post_media')
         .delete()
@@ -828,7 +984,7 @@ export const postService = {
       return [];
     } catch (error) {
       console.warn('Error in setPostMedia:', error);
-      return [];
+      throw error;
     }
   },
 
@@ -967,6 +1123,20 @@ export const authService = {
       console.warn('Failed to ensure user profile after signup:', profileError);
     }
 
+    return data;
+  },
+
+  // サインアップ確認メールを再送
+  async resendSignUpConfirmation(email: string, emailRedirectTo?: string) {
+    const { data, error } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+      options: {
+        emailRedirectTo,
+      },
+    });
+
+    if (error) throw error;
     return data;
   },
 

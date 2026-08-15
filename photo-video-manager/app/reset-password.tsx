@@ -23,7 +23,7 @@ import { useAppTheme } from '@/lib/ThemeContext';
 export default function ResetPasswordScreen() {
   const router = useRouter();
   const { fromRecovery } = useLocalSearchParams<{ fromRecovery?: string }>();
-  const { colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -117,7 +117,6 @@ export default function ResetPasswordScreen() {
       );
     } catch (error: any) {
       errorFeedback();
-      console.log('=== updatePassword error ===', error);
       Alert.alert('エラー', error?.message || 'パスワードの変更に失敗しました。もう一度お試しください。');
     } finally {
       setLoading(false);
@@ -126,9 +125,6 @@ export default function ResetPasswordScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.decorCircle1, { backgroundColor: isDark ? '#2a2a2a' : '#e5e5e5' }]} />
-      <View style={[styles.decorCircle2, { backgroundColor: isDark ? '#333333' : '#f0f0f0' }]} />
-
       <KeyboardAvoidingView
         style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -239,24 +235,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  decorCircle1: {
-    position: 'absolute',
-    top: -80,
-    right: -80,
-    width: 240,
-    height: 240,
-    borderRadius: 120,
-    opacity: 0.4,
-  },
-  decorCircle2: {
-    position: 'absolute',
-    bottom: -60,
-    left: -60,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    opacity: 0.3,
-  },
   keyboardView: {
     flex: 1,
   },
@@ -275,30 +253,27 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: 'center',
     paddingHorizontal: 24,
-    paddingVertical: 48,
+    paddingTop: 52,
+    paddingBottom: 36,
   },
   content: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
-    marginBottom: 34,
+    marginBottom: 24,
   },
   screenTitle: {
-    fontSize: 30,
-    fontWeight: '700',
+    ...typography.title1,
     textAlign: 'center',
-    letterSpacing: 0,
+    marginBottom: 8,
   },
   screenSubtitle: {
-    fontSize: 15,
+    ...typography.subhead,
     lineHeight: 22,
-    marginTop: 10,
     textAlign: 'center',
-    letterSpacing: 0,
   },
   formCard: {
     borderRadius: borderRadius.xl,
@@ -311,13 +286,15 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   formCardInner: {
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingTop: 22,
+    paddingBottom: 24,
   },
   description: {
     ...typography.subhead,
     textAlign: 'center',
     lineHeight: 22,
-    marginBottom: 24,
+    marginBottom: 20,
   },
   showPasswordButton: {
     flexDirection: 'row',

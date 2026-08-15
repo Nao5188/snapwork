@@ -22,6 +22,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { postService, authService, fileStorageService, storeService } from '@/lib/supabase';
+import { secureDraftStorage } from '@/lib/secureDraftStorage';
 import Button from '@/components/Button';
 import { useAppTheme } from '@/lib/ThemeContext';
 import { gradients } from '@/lib/theme';
@@ -39,13 +40,16 @@ const MEDIA_ITEM_SIZE = Math.min(
   )
 );
 
-const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
+const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', 'ブリーチ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
+const getStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}:${storeId}`;
+const getLegacyStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}_${storeId}`;
 const CREATE_POST_DRAFT_KEY = 'create_post_media_draft';
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   カット: 'cut-outline',
   カラー: 'color-palette-outline',
   パーマ: 'water-outline',
+  ブリーチ: 'sparkles-outline',
   縮毛: 'sparkles-outline',
   トリートメント: 'flask-outline',
 };
@@ -69,6 +73,33 @@ interface CreatePostDraft {
 const getSearchParam = (value: string | string[] | undefined) => (
   Array.isArray(value) ? value[0] : value
 );
+
+const normalizeCategory = (category: string) => category.trim().normalize('NFKC');
+
+const parseStoredCategories = (value: string | null) => {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map(category => normalizeCategory(`${category}`)).filter(Boolean);
+    }
+  } catch {
+    // Older values may be comma-separated plain text.
+  }
+
+  return value.split(',').map(category => normalizeCategory(category)).filter(Boolean);
+};
+
+const uniqueCategories = (categories: string[]) => {
+  const seen = new Set<string>();
+  return categories.filter(category => {
+    const normalizedCategory = normalizeCategory(category);
+    if (!normalizedCategory || seen.has(normalizedCategory)) return false;
+    seen.add(normalizedCategory);
+    return true;
+  });
+};
 
 const decodeMediaUri = (uri: string) => {
   try {
@@ -138,6 +169,7 @@ export default function CreatePostScreen() {
 
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [customCategories, setCustomCategories] = useState<string[]>([]);
@@ -148,7 +180,7 @@ export default function CreatePostScreen() {
   const processedMediaParamsRef = useRef<string | null>(null);
 
   useEffect(() => {
-    loadCustomCategories();
+    loadActiveStoreCategories();
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 400,
@@ -157,39 +189,87 @@ export default function CreatePostScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadCustomCategories = async () => {
+  const loadCustomCategories = async (storeId: string | null) => {
     try {
-      const stored = await AsyncStorage.getItem(CUSTOM_CATEGORIES_KEY);
-      if (stored) {
-        setCustomCategories(JSON.parse(stored));
+      if (!storeId) {
+        setCustomCategories([]);
+        return;
       }
+
+      const [stored, legacyStored] = await Promise.all([
+        AsyncStorage.getItem(getStoreCustomCategoriesKey(storeId)),
+        AsyncStorage.getItem(getLegacyStoreCustomCategoriesKey(storeId)),
+      ]);
+      setCustomCategories(uniqueCategories([
+        ...parseStoredCategories(stored),
+        ...parseStoredCategories(legacyStored),
+      ]));
     } catch (error) {
       console.error('Error loading custom categories:', error);
     }
   };
 
+  const loadActiveStoreCategories = async () => {
+    try {
+      const { data: { user } } = await authService.getCurrentUser();
+      if (!user) {
+        setCustomCategories([]);
+        return;
+      }
+
+      const storeId = await storeService.getActiveStoreId(user.id);
+      setActiveStoreId(storeId);
+      await loadCustomCategories(storeId);
+    } catch (error) {
+      console.error('Error loading active store categories:', error);
+    }
+  };
+
+  const resolveActiveStoreId = async () => {
+    if (activeStoreId) return activeStoreId;
+
+    const { data: { user } } = await authService.getCurrentUser();
+    if (!user) return null;
+
+    const storeId = await storeService.getActiveStoreId(user.id);
+    setActiveStoreId(storeId);
+    if (storeId) await loadCustomCategories(storeId);
+    return storeId;
+  };
+
   const saveCustomCategory = async (category: string) => {
     try {
-      const updated = [...customCategories, category];
-      await AsyncStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(updated));
+      const storeId = await resolveActiveStoreId();
+      if (!storeId) {
+        Alert.alert('エラー', '店舗情報を取得できませんでした。');
+        return false;
+      }
+
+      const updated = uniqueCategories([...customCategories, category]);
+      await AsyncStorage.setItem(getStoreCustomCategoriesKey(storeId), JSON.stringify(updated));
       setCustomCategories(updated);
+      return true;
     } catch (error) {
       console.error('Error saving custom category:', error);
+      Alert.alert('エラー', 'カテゴリの保存に失敗しました。');
+      return false;
     }
   };
 
   const handleAddCategory = async () => {
-    const trimmed = newCategoryName.trim();
+    const trimmed = normalizeCategory(newCategoryName);
     if (!trimmed) {
       Alert.alert('エラー', 'カテゴリ名を入力してください。');
       return;
     }
-    const allCategories = [...DEFAULT_MENU_CATEGORIES, ...customCategories];
+    const allCategories = [...DEFAULT_MENU_CATEGORIES, ...customCategories].map(normalizeCategory);
     if (allCategories.includes(trimmed)) {
       Alert.alert('エラー', 'このカテゴリは既に存在します。');
       return;
     }
-    await saveCustomCategory(trimmed);
+    const saved = await saveCustomCategory(trimmed);
+    if (!saved) return;
+
     setSelectedCategories(prev => [...prev, trimmed]);
     setNewCategoryName('');
     setShowAddCategoryModal(false);
@@ -221,8 +301,17 @@ export default function CreatePostScreen() {
           onPress: async () => {
             try {
               // カスタムカテゴリから削除
-              const updated = customCategories.filter(c => c !== category);
-              await AsyncStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(updated));
+              const storeId = await resolveActiveStoreId();
+              if (!storeId) {
+                Alert.alert('エラー', '店舗情報を取得できませんでした。');
+                return;
+              }
+
+              const updated = customCategories.filter(c => normalizeCategory(c) !== normalizeCategory(category));
+              await Promise.all([
+                AsyncStorage.setItem(getStoreCustomCategoriesKey(storeId), JSON.stringify(updated)),
+                AsyncStorage.setItem(getLegacyStoreCustomCategoriesKey(storeId), JSON.stringify(updated)),
+              ]);
               setCustomCategories(updated);
               // 選択中の場合は選択解除
               setSelectedCategories(prev => prev.filter(c => c !== category));
@@ -255,7 +344,7 @@ export default function CreatePostScreen() {
 
       if (appendMedia) {
         try {
-          const storedDraft = await AsyncStorage.getItem(CREATE_POST_DRAFT_KEY);
+          const storedDraft = await secureDraftStorage.getItem(CREATE_POST_DRAFT_KEY);
           if (storedDraft) {
             const draft = JSON.parse(storedDraft) as CreatePostDraft;
             if (!cancelled) {
@@ -275,7 +364,7 @@ export default function CreatePostScreen() {
       setMediaItems(prev => mergeMediaItems(appendMedia ? (draftMediaItems ?? prev) : [], incomingItems));
 
       if (appendMedia) {
-        await AsyncStorage.removeItem(CREATE_POST_DRAFT_KEY).catch((error) => {
+        await secureDraftStorage.removeItem(CREATE_POST_DRAFT_KEY).catch((error) => {
           console.error('Error clearing create post draft:', error);
         });
       }
@@ -300,7 +389,7 @@ export default function CreatePostScreen() {
     };
 
     try {
-      await AsyncStorage.setItem(CREATE_POST_DRAFT_KEY, JSON.stringify(draft));
+      await secureDraftStorage.setItem(CREATE_POST_DRAFT_KEY, JSON.stringify(draft));
     } catch (error) {
       console.error('Error saving create post draft:', error);
     }
@@ -376,7 +465,7 @@ export default function CreatePostScreen() {
         styles.mediaActionIcon,
         variant === 'photo' ? styles.mediaActionIconPhoto : styles.mediaActionIconAlbum,
       ]}>
-        <Ionicons name={icon} size={24} color="#111827" />
+        <Ionicons name={icon} size={24} color="#2196F3" />
       </View>
       <Text style={styles.mediaActionLabel}>{label}</Text>
     </TouchableOpacity>
@@ -401,7 +490,7 @@ export default function CreatePostScreen() {
         accessibilityRole="button"
         accessibilityState={{ selected }}
       >
-        <Ionicons name={icon} size={18} color={selected ? '#2563EB' : '#111827'} />
+        <Ionicons name={icon} size={18} color={selected ? '#2196F3' : '#111827'} />
         <Text style={[styles.categoryPillText, selected && styles.categoryPillTextSelected]}>
           {category}
         </Text>
@@ -421,6 +510,7 @@ export default function CreatePostScreen() {
     if (!validateForm()) return;
 
     setLoading(true);
+    const uploadedMediaUrls: string[] = [];
     try {
       const { data: { user } } = await authService.getCurrentUser();
 
@@ -430,9 +520,9 @@ export default function CreatePostScreen() {
         return;
       }
 
-      const activeStoreId = await storeService.getActiveStoreId(user.id);
+      const postStoreId = await storeService.getActiveStoreId(user.id);
 
-      if (!activeStoreId) {
+      if (!postStoreId) {
         Alert.alert(
           '店舗が未設定です',
           '店舗を作成または参加してから投稿してください。',
@@ -442,20 +532,21 @@ export default function CreatePostScreen() {
       }
 
       // 画像をSupabase Storageにアップロード
-      console.log('Uploading images to Supabase Storage...');
-      const uploadedMediaUrls: string[] = [];
 
       for (let i = 0; i < mediaItems.length; i++) {
         const item = mediaItems[i];
         try {
-          console.log(`Uploading image ${i + 1}/${mediaItems.length}...`);
-          const uploadedUrl = await fileStorageService.uploadPostImage(user.id, item.uri);
+          const uploadedUrl = await fileStorageService.uploadPostImage(
+            user.id,
+            item.uri,
+            undefined,
+            item.type
+          );
           uploadedMediaUrls.push(uploadedUrl);
-          console.log(`Image ${i + 1} uploaded:`, uploadedUrl);
-        } catch (uploadError) {
-          console.error(`Failed to upload image ${i + 1}:`, uploadError);
-          // アップロードに失敗した場合は元のURIを使用（フォールバック）
-          uploadedMediaUrls.push(item.uri);
+        } catch {
+          console.error('Failed to upload media item');
+          await fileStorageService.deletePostMedia(uploadedMediaUrls).catch(() => {});
+          throw new Error('メディアのアップロードに失敗しました。通信状態を確認して再度お試しください。');
         }
       }
 
@@ -469,7 +560,7 @@ export default function CreatePostScreen() {
         media_url: mainMediaUrl,
         is_video: mediaItems[0].type === 'video',
         user_id: user.id,
-        store_id: activeStoreId,
+        store_id: postStoreId,
         likes_count: 0,
       };
 
@@ -484,9 +575,13 @@ export default function CreatePostScreen() {
               display_order: index,
             }));
 
-            await postService.setPostMedia(savedPost.id, postMediaItems);
+            const savedMediaItems = await postService.setPostMedia(savedPost.id, postMediaItems);
+            if (savedMediaItems.length !== postMediaItems.length) {
+              throw new Error('複数メディア情報の保存に失敗しました。');
+            }
           } catch (mediaError) {
-            console.warn('Failed to save to post_media table:', mediaError);
+            await postService.deletePost(savedPost.id).catch(() => {});
+            throw mediaError;
           }
         }
 
@@ -496,7 +591,7 @@ export default function CreatePostScreen() {
           [{
             text: 'OK',
             onPress: async () => {
-              await AsyncStorage.removeItem(CREATE_POST_DRAFT_KEY).catch(() => {});
+              await secureDraftStorage.removeItem(CREATE_POST_DRAFT_KEY).catch(() => {});
               router.push('/(tabs)/history');
             },
           }]
@@ -505,6 +600,7 @@ export default function CreatePostScreen() {
         return savedPost;
       } catch (createError) {
         console.error('Post creation error:', createError);
+        await fileStorageService.deletePostMedia(uploadedMediaUrls).catch(() => {});
         throw createError;
       }
     } catch (error) {
@@ -594,7 +690,7 @@ export default function CreatePostScreen() {
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleGroup}>
                 <View style={styles.sectionIconBox}>
-                  <Ionicons name="image-outline" size={22} color="#4F6AF2" />
+                  <Ionicons name="image-outline" size={22} color="#2196F3" />
                 </View>
                 <Text style={[styles.sectionTitle, { color: colors.text }]}>メディア</Text>
                 <View style={styles.countBadge}>
@@ -620,7 +716,7 @@ export default function CreatePostScreen() {
               }
             />
             <View style={styles.mediaHelpRow}>
-              <Ionicons name="sparkles-outline" size={16} color="#4F6AF2" />
+              <Ionicons name="sparkles-outline" size={16} color="#2196F3" />
               <Text style={[styles.mediaHelpText, { color: colors.textSecondary }]}>
                 最大5枚まで追加できます（写真・動画どちらも可）
               </Text>
@@ -631,7 +727,7 @@ export default function CreatePostScreen() {
           <View style={[styles.section, { backgroundColor: colors.surface }]}>
             <View style={[styles.sectionTitleGroup, styles.formTitleGroup]}>
               <View style={styles.sectionIconBox}>
-                <Ionicons name="document-text-outline" size={22} color="#4F6AF2" />
+                <Ionicons name="document-text-outline" size={22} color="#2196F3" />
               </View>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>投稿内容</Text>
             </View>
@@ -699,7 +795,7 @@ export default function CreatePostScreen() {
                   onPress={() => setShowAddCategoryModal(true)}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="add" size={19} color="#4F6AF2" />
+                  <Ionicons name="add" size={19} color="#2196F3" />
                   <Text style={styles.addCategoryText}>カテゴリを追加</Text>
                 </TouchableOpacity>
               </View>
@@ -808,7 +904,7 @@ const styles = StyleSheet.create({
   submitButton: {
     borderRadius: 20,
     overflow: 'hidden',
-    shadowColor: '#2563EB',
+    shadowColor: '#2196F3',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.24,
     shadowRadius: 18,
@@ -942,7 +1038,7 @@ const styles = StyleSheet.create({
     width: MEDIA_ITEM_SIZE,
     height: MEDIA_ITEM_SIZE,
     borderWidth: 1.5,
-    borderColor: '#D8E0F5',
+    borderColor: '#2196F3',
     borderStyle: 'dashed',
     borderRadius: 16,
     justifyContent: 'center',
@@ -964,7 +1060,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1ECFF',
   },
   mediaActionLabel: {
-    color: '#111827',
+    color: '#2196F3',
     fontSize: 13,
     fontWeight: '800',
   },
@@ -1038,7 +1134,7 @@ const styles = StyleSheet.create({
   },
   categoryPillSelected: {
     backgroundColor: '#F8FBFF',
-    borderColor: '#4F6AF2',
+    borderColor: '#2196F3',
   },
   categoryPillText: {
     color: '#111827',
@@ -1046,18 +1142,18 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   categoryPillTextSelected: {
-    color: '#1D4ED8',
+    color: '#2196F3',
   },
   customCategoryButton: {
     borderStyle: 'dashed',
   },
   addCategoryButton: {
     borderStyle: 'dashed',
-    borderColor: '#D8E0F5',
+    borderColor: '#2196F3',
     backgroundColor: '#FBFCFF',
   },
   addCategoryText: {
-    color: '#4F6AF2',
+    color: '#2196F3',
     fontSize: 14,
     fontWeight: '800',
   },

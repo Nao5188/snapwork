@@ -28,7 +28,7 @@ const { height } = Dimensions.get('window');
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const { mode, email: initialEmail } = useLocalSearchParams<{ mode?: string; email?: string }>();
   const { colors } = useAppTheme();
   const [isSignUp, setIsSignUp] = useState(false);
   const [formData, setFormData] = useState({
@@ -66,6 +66,15 @@ export default function LoginScreen() {
   }, [mode]);
 
   useEffect(() => {
+    if (!initialEmail) return;
+
+    setFormData(prev => ({
+      ...prev,
+      email: initialEmail,
+    }));
+  }, [initialEmail]);
+
+  useEffect(() => {
   if (reduceMotion) {
       fadeAnim.setValue(1);
       slideAnim.setValue(0);
@@ -95,7 +104,7 @@ export default function LoginScreen() {
           setRememberMe(rememberMeData.rememberMe);
           setFormData(prev => ({
             ...prev,
-            email: rememberMeData.email,
+            email: initialEmail || rememberMeData.email,
           }));
         }
       } catch (error) {
@@ -104,7 +113,7 @@ export default function LoginScreen() {
     };
 
     loadRememberMeSettings();
-  }, []);
+  }, [initialEmail]);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -176,7 +185,6 @@ export default function LoginScreen() {
     lightTap();
     try {
       const redirectTo = Linking.createURL('reset-password');
-      console.log('=== redirectTo URL ===', redirectTo);
       await authService.resetPassword(resetEmail, redirectTo);
       successFeedback();
       Alert.alert(
@@ -215,7 +223,6 @@ export default function LoginScreen() {
 
     try {
       if (isSignUp) {
-        console.log('[Step 1] checkDisplayNameAvailability...');
         const isDisplayNameAvailable = await userService.checkDisplayNameAvailability(formData.displayName);
         if (!isDisplayNameAvailable) {
           setErrors({ displayName: 'この表示名は既に使用されています' });
@@ -224,7 +231,6 @@ export default function LoginScreen() {
           return;
         }
 
-        console.log('[Step 2] generateUsername & checkUsernameAvailability...');
         let username = generateUsername(formData.displayName);
         // 重複時は最大5回リトライ
         for (let i = 0; i < 5; i++) {
@@ -233,9 +239,8 @@ export default function LoginScreen() {
           username = 'user_' + Math.random().toString(36).substring(2, 10);
         }
 
-        console.log('[Step 3] authService.signUp...');
         const emailRedirectTo = Linking.createURL('login');
-        await authService.signUp(
+        const signUpResult = await authService.signUp(
           formData.email,
           formData.password,
           {
@@ -246,7 +251,13 @@ export default function LoginScreen() {
         );
 
         successFeedback();
-        router.replace({ pathname: '/register-complete', params: { email: formData.email } } as any);
+        router.replace({
+          pathname: '/register-complete',
+          params: {
+            email: formData.email,
+            requiresEmailConfirmation: signUpResult.session ? '0' : '1',
+          },
+        } as any);
       } else {
         await authService.signIn(formData.email, formData.password, rememberMe);
         successFeedback();
@@ -640,8 +651,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   checkboxChecked: {
-    backgroundColor: '#444444',
-    borderColor: '#444444',
+    backgroundColor: '#2196F3',
+    borderColor: '#2196F3',
   },
   rememberMeText: {
     ...typography.subhead,

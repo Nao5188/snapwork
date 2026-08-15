@@ -11,6 +11,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authService, storeService, supabase } from '@/lib/supabase';
 import { AppThemeProvider, useAppTheme } from '@/lib/ThemeContext';
+import { refreshDrawerUserInfo } from '@/lib/drawerUserInfo';
 
 const WELCOME_COMPLETED_KEY = 'saloncloud_welcome_completed';
 
@@ -40,9 +41,8 @@ function AppContent({ isAuthenticated, hasStoreMembership, hasCompletedWelcome }
         <Stack.Screen name="post/edit/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="gallery" options={{ headerShown: false }} />
         <Stack.Screen name="admin/filter-search" options={{ headerShown: false }} />
-        <Stack.Screen name="admin/staff-album" options={{ headerShown: false }} />
+        <Stack.Screen name="admin/statistics" options={{ headerShown: false }} />
         <Stack.Screen name="admin/staff-list" options={{ headerShown: false }} />
-        <Stack.Screen name="admin/staff-posts" options={{ headerShown: false }} />
         <Stack.Screen
           name="my-posts"
           options={{
@@ -120,7 +120,13 @@ export default function RootLayout() {
 
       routedUserId.current = userId;
       const nextRoutingPromise = (async () => {
-        const hasMembership = await storeService.hasMembership(userId);
+        const [hasMembership] = await Promise.all([
+          storeService.hasMembership(userId),
+          refreshDrawerUserInfo(userId).catch((error) => {
+            console.warn('Failed to warm drawer user info:', error);
+            return null;
+          }),
+        ]);
         if (!mounted) return;
 
         setHasStoreMembership(hasMembership);
@@ -148,7 +154,6 @@ export default function RootLayout() {
         const autoLoginResult = await authService.attemptAutoLogin();
 
         if (autoLoginResult.success && 'user' in autoLoginResult && autoLoginResult.user) {
-          console.log('Auto login successful for:', autoLoginResult.email);
           await routeAuthenticatedUser(autoLoginResult.user.id, false);
           return;
         }
@@ -179,7 +184,6 @@ export default function RootLayout() {
           if (access_token && refresh_token) {
             isRecoveryFlow.current = true;
             const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-            console.log('=== setSession result ===', error?.message ?? 'success');
             if (!error) {
               router.replace({ pathname: '/reset-password', params: { fromRecovery: '1' } });
             } else {
@@ -189,7 +193,6 @@ export default function RootLayout() {
         } else {
           isRecoveryFlow.current = true;
           const { data, error } = await supabase.auth.exchangeCodeForSession(url);
-          console.log('=== exchangeCodeForSession ===', { session: !!data?.session, error: error?.message });
           if (!error && data?.session) {
             router.replace({ pathname: '/reset-password', params: { fromRecovery: '1' } });
           } else {
@@ -205,14 +208,11 @@ export default function RootLayout() {
         const access_token = params.get('access_token');
         const refresh_token = params.get('refresh_token');
         if (access_token && refresh_token) {
-          console.log('=== Email confirmation (implicit flow) ===');
           const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-          if (error) console.error('Email confirmation session error:', error.message);
+          if (error) console.error('Confirmation session failed:', error.message);
         }
       } else if (url.includes('code=')) {
-        console.log('=== Email confirmation (PKCE flow) ===');
-        const { data, error } = await supabase.auth.exchangeCodeForSession(url);
-        console.log('=== exchangeCodeForSession (signup) ===', { session: !!data?.session, error: error?.message });
+        await supabase.auth.exchangeCodeForSession(url);
       }
     };
 

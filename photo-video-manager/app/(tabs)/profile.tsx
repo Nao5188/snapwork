@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -21,8 +21,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
-import * as VideoThumbnails from 'expo-video-thumbnails';
 import { authService, userService, postService, fileStorageService, storeService } from '@/lib/supabase';
+import { getStoreRoleLabel } from '@/lib/storeRoles';
+import type { StoreMemberRole } from '@/lib/storeRoles';
+import {
+  getMediaThumbnailUrl,
+  hasDedicatedThumbnail,
+  shouldRefreshLegacyVideoThumbnail,
+} from '@/lib/mediaThumbnails';
+import { useSignedStorageUrlResolver } from '@/lib/signedStorageUrls';
+import { useVideoThumbnailRepair } from '@/lib/useVideoThumbnailRepair';
+import { subscribeActiveStoreChanged } from '@/lib/activeStoreEvents';
 import DrawerMenu from '@/components/DrawerMenu';
 import { useAppTheme } from '@/lib/ThemeContext';
 
@@ -31,8 +40,8 @@ const numColumns = 3;
 const GRID_GAP = 10;
 const GRID_HORIZONTAL_PADDING = 16;
 const itemSize = (width - (GRID_HORIZONTAL_PADDING * 2) - (GRID_GAP * (numColumns - 1))) / numColumns;
-const PROFILE_ACCENT = '#2563EB';
-const PROFILE_ACCENT_SOFT = '#EEF4FF';
+const PROFILE_ACCENT = '#2196F3';
+const PROFILE_ACCENT_SOFT = '#EAF4FE';
 const HEADER_LOGO = require('@/assets/images/HCINCLogo.png');
 
 interface UserPost {
@@ -50,12 +59,25 @@ interface UserProfile {
   id: string;
   username: string;
   displayName: string;
-  avatar: string;
+  avatar: string | null;
   postsCount: number;
   adoptedPostsCount: number;
   storeName: string | null;
-  role: 'owner' | 'staff' | null;
+  role: StoreMemberRole | null;
 }
+
+const normalizeAvatarUrl = (avatarUrl?: string | null) => {
+  if (
+    !avatarUrl ||
+    avatarUrl.startsWith('file://') ||
+    avatarUrl.includes('placeholder') ||
+    avatarUrl.includes('ui-avatars.com')
+  ) {
+    return null;
+  }
+
+  return avatarUrl;
+};
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -67,23 +89,23 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
-  const [videoThumbnails, setVideoThumbnails] = useState<{ [id: string]: string }>({});
+  const [postThumbnailErrors, setPostThumbnailErrors] = useState<Set<string>>(new Set());
+  const {
+    failedKeys: failedVideoThumbnailKeys,
+    repairVideoThumbnail,
+    thumbnailUrls: repairedVideoThumbnailUrls,
+  } = useVideoThumbnailRepair();
   const { colors } = useAppTheme();
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    isMountedRef.current = true;
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 220,
       useNativeDriver: true,
     }).start();
-    return () => {
-      isMountedRef.current = false;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -98,7 +120,7 @@ export default function ProfileScreen() {
         return;
       }
 
-      const [profile, posts, adoptedPostsCount, memberships] = await Promise.all([
+      const [profile, posts, adoptedPostsCount, memberships, activeStoreId] = await Promise.all([
         userService.getProfile(user.id),
         postService.getUserPosts(user.id),
         postService.getUserApprovedPostsCount(user.id),
@@ -106,17 +128,14 @@ export default function ProfileScreen() {
           console.warn('Failed to load store membership:', storeError);
           return [];
         }),
+        storeService.getActiveStoreId(user.id),
       ]);
-      const primaryMembership = memberships[0] ?? null;
+      const activeMembership = memberships.find(
+        membership => membership.store_id === activeStoreId
+      ) ?? memberships[0] ?? null;
       const postsCount = posts.length;
 
-      let avatarUrl = profile.avatar_url;
-
-      if (!avatarUrl ||
-          avatarUrl.startsWith('file://') ||
-          avatarUrl.includes('placeholder')) {
-        avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.display_name || profile.username || 'User')}&size=200&background=1a1a1a&color=fff&bold=true`;
-      }
+      const avatarUrl = normalizeAvatarUrl(profile.avatar_url);
 
       setUserProfile({
         id: profile.id,
@@ -125,8 +144,8 @@ export default function ProfileScreen() {
         avatar: avatarUrl,
         postsCount: postsCount,
         adoptedPostsCount: adoptedPostsCount,
-        storeName: primaryMembership?.store?.name ?? null,
-        role: primaryMembership?.role ?? null,
+        storeName: activeMembership?.store?.name ?? null,
+        role: activeMembership?.role ?? null,
       });
 
       const formattedPosts: UserPost[] = posts.map(post => ({
@@ -141,19 +160,6 @@ export default function ProfileScreen() {
       }));
 
       setUserPosts(formattedPosts);
-
-      // 動画投稿のサムネイルを生成
-      const videoPosts = formattedPosts.filter(p => p.isVideo && p.mediaUri);
-      videoPosts.forEach(async (post) => {
-        try {
-          const { uri } = await VideoThumbnails.getThumbnailAsync(post.mediaUri, { time: 0 });
-          if (isMountedRef.current) {
-            setVideoThumbnails(prev => ({ ...prev, [post.id]: uri }));
-          }
-        } catch {
-          // サムネイル生成失敗は無視
-        }
-      });
     } catch (error) {
       console.error('Error loading user profile:', error);
 
@@ -163,7 +169,7 @@ export default function ProfileScreen() {
           id: fallbackUser.id,
           username: `user_${fallbackUser.id.slice(-6)}`,
           displayName: `ユーザー${fallbackUser.id.slice(-4)}`,
-          avatar: `https://ui-avatars.com/api/?name=User&size=200&background=1a1a1a&color=fff`,
+          avatar: null,
           postsCount: 0,
           adoptedPostsCount: 0,
           storeName: null,
@@ -182,6 +188,49 @@ export default function ProfileScreen() {
       loadUserProfile();
     }, [loadUserProfile])
   );
+
+  useEffect(() => {
+    return subscribeActiveStoreChanged(() => {
+      loadUserProfile();
+    });
+  }, [loadUserProfile]);
+
+  useEffect(() => {
+    userPosts.forEach((post) => {
+      if (
+        post.isVideo
+        && hasDedicatedThumbnail(post.mediaUri)
+        && shouldRefreshLegacyVideoThumbnail(post.createdAt)
+      ) {
+        const thumbnailKey = `${post.id}:${post.mediaUri}`;
+        repairVideoThumbnail(thumbnailKey, post.mediaUri, { markFailed: false });
+      }
+    });
+  }, [repairVideoThumbnail, userPosts]);
+
+  const profilePostStorageUrls = useMemo(() => (
+    userPosts.flatMap((post) => {
+      const thumbnailKey = `${post.id}:${post.mediaUri}`;
+      const thumbnailUrl = getMediaThumbnailUrl(post.mediaUri);
+      const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey];
+
+      return repairedThumbnailUrl
+        ? [post.mediaUri, thumbnailUrl, repairedThumbnailUrl]
+        : [post.mediaUri, thumbnailUrl];
+    })
+  ), [repairedVideoThumbnailUrls, userPosts]);
+  const resolveProfilePostStorageUrl = useSignedStorageUrlResolver('posts', profilePostStorageUrls);
+  const resolveProfileVideoThumbnailStorageUrl = useSignedStorageUrlResolver(
+    'posts',
+    profilePostStorageUrls,
+    { deferStorageUrlsUntilSigned: true },
+  );
+
+  const profileAvatarStorageUrls = useMemo(
+    () => [userProfile?.avatar, editAvatar],
+    [editAvatar, userProfile?.avatar]
+  );
+  const resolveProfileAvatarStorageUrl = useSignedStorageUrlResolver('avatars', profileAvatarStorageUrls);
 
   const handleEditProfile = () => {
     if (!userProfile) return;
@@ -320,20 +369,52 @@ export default function ProfileScreen() {
   };
 
   const renderPostItem = ({ item }: { item: UserPost }) => {
+    const thumbnailKey = `${item.id}:${item.mediaUri}`;
+    const thumbnailUrl = getMediaThumbnailUrl(item.mediaUri);
+    const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey] ?? thumbnailUrl;
+    const thumbnailFailed = item.isVideo
+      ? failedVideoThumbnailKeys.has(thumbnailKey)
+      : postThumbnailErrors.has(thumbnailKey);
+    const hasThumbnail = hasDedicatedThumbnail(item.mediaUri);
+    const resolvedThumbnailUrl = item.isVideo
+      ? resolveProfileVideoThumbnailStorageUrl(repairedThumbnailUrl)
+      : resolveProfilePostStorageUrl(thumbnailUrl);
+    const source = item.isVideo
+      ? (!thumbnailFailed && hasThumbnail && resolvedThumbnailUrl
+        ? { uri: resolvedThumbnailUrl }
+        : undefined)
+      : (thumbnailFailed && hasThumbnail ? undefined : { uri: resolvedThumbnailUrl });
+
     return (
       <Pressable
         style={styles.postItem}
         onPress={() => router.push(`/my-posts?postId=${item.id}`)}
       >
         <View style={styles.postImageWrapper}>
-          <Image
-            source={item.isVideo
-              ? (videoThumbnails[item.id] ? { uri: videoThumbnails[item.id] } : undefined)
-              : { uri: item.mediaUri }
-            }
-            style={styles.postImage}
-            contentFit="cover"
-          />
+          {source ? (
+            <Image
+              source={source}
+              style={styles.postImage}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              recyclingKey={`profile-post-${item.id}`}
+              onError={() => {
+                if (item.isVideo && hasThumbnail) {
+                  repairVideoThumbnail(thumbnailKey, item.mediaUri, { force: true });
+                } else if (!thumbnailFailed && hasThumbnail) {
+                  setPostThumbnailErrors(prev => new Set(prev).add(thumbnailKey));
+                }
+              }}
+            />
+          ) : (
+            <View style={[styles.postImage, styles.postImageFallback]}>
+              <Ionicons
+                name={item.isVideo ? 'videocam-outline' : 'image-outline'}
+                size={28}
+                color={colors.textMuted}
+              />
+            </View>
+          )}
           {item.isVideo && (
             <View style={styles.videoIndicator}>
               <Ionicons name="play" size={14} color="white" />
@@ -446,11 +527,7 @@ export default function ProfileScreen() {
 
   const renderHeader = () => {
     if (!userProfile) return null;
-    const roleLabel = userProfile.role === 'owner'
-      ? 'オーナー'
-      : userProfile.role === 'staff'
-        ? 'スタッフ'
-        : 'メンバー';
+    const roleLabel = getStoreRoleLabel(userProfile.role);
     const storeName = userProfile.storeName ?? '店舗未設定';
 
     return (
@@ -464,11 +541,19 @@ export default function ProfileScreen() {
               accessibilityLabel="プロフィール画像を編集"
             >
               <View style={[styles.avatarRing, { borderColor: colors.borderLight, backgroundColor: colors.surface2 }]}>
-                <Image
-                  source={{ uri: userProfile.avatar }}
-                  style={styles.avatar}
-                  contentFit="cover"
-                />
+                {userProfile.avatar ? (
+                  <Image
+                    source={{ uri: resolveProfileAvatarStorageUrl(userProfile.avatar) }}
+                    style={styles.avatar}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    recyclingKey={`profile-avatar-${userProfile.id}`}
+                  />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <Ionicons name="person" size={42} color={colors.textMuted} />
+                  </View>
+                )}
               </View>
               <View style={[styles.avatarCameraButton, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
                 <Ionicons name="camera-outline" size={17} color={colors.text} />
@@ -596,11 +681,18 @@ export default function ProfileScreen() {
               <View style={styles.avatarEditContainer}>
                 <TouchableOpacity onPress={handleSelectAvatar} activeOpacity={0.8}>
                   <View style={styles.avatarEditWrapper}>
-                    <Image
-                      source={{ uri: editAvatar || 'https://ui-avatars.com/api/?name=User&size=200&background=f5f5f5&color=999' }}
-                      style={styles.avatarEdit}
-                      contentFit="cover"
-                    />
+                    {editAvatar ? (
+                      <Image
+                        source={{ uri: resolveProfileAvatarStorageUrl(editAvatar) }}
+                        style={styles.avatarEdit}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                      />
+                    ) : (
+                      <View style={styles.avatarEditPlaceholder}>
+                        <Ionicons name="person" size={40} color="#999" />
+                      </View>
+                    )}
                     <View style={styles.avatarEditOverlay}>
                       <Ionicons name="camera-outline" size={24} color="white" />
                     </View>
@@ -618,7 +710,7 @@ export default function ProfileScreen() {
                   <Ionicons
                     name="person-outline"
                     size={20}
-                    color={focusedField === 'displayName' ? '#444444' : '#999'}
+                    color={focusedField === 'displayName' ? PROFILE_ACCENT : '#999'}
                     style={styles.inputIcon}
                   />
                   <TextInput
@@ -723,6 +815,12 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     backgroundColor: '#f5f5f5',
+  },
+  avatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   avatarCameraButton: {
     position: 'absolute',
@@ -1031,7 +1129,7 @@ const styles = StyleSheet.create({
   },
   inputContainerFocused: {
     backgroundColor: '#fff',
-    borderColor: '#444444',
+    borderColor: PROFILE_ACCENT,
   },
   inputIcon: {
     marginLeft: 14,
@@ -1055,6 +1153,14 @@ const styles = StyleSheet.create({
     height: 88,
     borderRadius: 44,
     backgroundColor: '#f5f5f5',
+  },
+  avatarEditPlaceholder: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: '#f5f5f5',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   avatarEditOverlay: {
     position: 'absolute',
@@ -1097,6 +1203,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     backgroundColor: '#f5f5f5',
+  },
+  postImageFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   postMenuButton: {
     position: 'absolute',

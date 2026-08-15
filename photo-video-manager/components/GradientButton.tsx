@@ -110,7 +110,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 54,
-    backgroundColor: '#2196F3',
+    backgroundColor: colors.primary,
   },
   buttonText: {
     ...typography.headline,

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -15,18 +15,42 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { authService, storeService, supabase } from '@/lib/supabase';
+import { subscribeActiveStoreChanged } from '@/lib/activeStoreEvents';
+import { useSignedStorageUrlResolver } from '@/lib/signedStorageUrls';
+import { getStoreRoleLabel, isStoreAdminRole, normalizeStoreMemberRole } from '@/lib/storeRoles';
+import type { StoreMemberRole } from '@/lib/storeRoles';
 import { useAppTheme } from '@/lib/ThemeContext';
 
 interface StaffMember {
   id: string;
   user_id: string;
-  role: 'owner' | 'staff';
+  role: StoreMemberRole;
   created_at: string;
-  username: string;
   display_name: string;
   avatar_url: string | null;
   post_count: number;
 }
+
+const getRoleBadgeStyle = (role: StoreMemberRole, isDark: boolean) => {
+  switch (role) {
+    case 'owner':
+      return {
+        backgroundColor: isDark ? '#3d2c00' : '#FFF4E0',
+        color: '#E07B00',
+      };
+    case 'admin':
+      return {
+        backgroundColor: isDark ? '#12351F' : '#EAF8EF',
+        color: '#1F8A49',
+      };
+    case 'staff':
+    default:
+      return {
+        backgroundColor: isDark ? '#18304c' : '#EAF3FF',
+        color: '#1F7AE0',
+      };
+  }
+};
 
 export default function StaffListScreen() {
   const router = useRouter();
@@ -36,21 +60,43 @@ export default function StaffListScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [currentUserRole, setCurrentUserRole] = useState<'owner' | 'staff' | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState<StoreMemberRole | null>(null);
   const [setupWarning, setSetupWarning] = useState<string | null>(null);
 
   const ownerCount = useMemo(
     () => members.filter(member => member.role === 'owner').length,
     [members]
   );
-  const staffCount = Math.max(0, members.length - ownerCount);
-  const canManageMembers = currentUserRole === 'owner';
+  const adminCount = useMemo(
+    () => members.filter(member => member.role === 'admin').length,
+    [members]
+  );
+  const staffCount = useMemo(
+    () => members.filter(member => member.role === 'staff').length,
+    [members]
+  );
+  const canManageMembers = isStoreAdminRole(currentUserRole);
+  const canManageRoles = currentUserRole === 'owner';
+  const avatarStorageUrls = useMemo(
+    () => members.map(member => member.avatar_url),
+    [members]
+  );
+  const resolveAvatarStorageUrl = useSignedStorageUrlResolver('avatars', avatarStorageUrls);
 
   const getAdminActionErrorMessage = (error: any) => {
     const message = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`;
 
     if (error?.code === 'PGRST202' || message.includes('store_admin_')) {
       return '管理操作用のDB更新が必要です。Supabaseで database/store_member_admin.sql を実行してください。';
+    }
+    if (message.includes('Only store owners can change member roles')) {
+      return '役割の変更は店舗オーナーのみ実行できます。';
+    }
+    if (message.includes('Only store owners can remove owners or admins')) {
+      return 'オーナーまたは管理者の削除は店舗オーナーのみ実行できます。';
+    }
+    if (message.includes('Only store owners and admins')) {
+      return 'この操作はオーナーまたは管理者のみ実行できます。';
     }
     if (error?.code === '42501' || message.includes('Only store owners')) {
       return 'この操作は店舗オーナーのみ実行できます。';
@@ -84,11 +130,11 @@ export default function StaffListScreen() {
         .maybeSingle();
 
       if (currentMembershipError) throw currentMembershipError;
-      const role = currentMembership?.role === 'owner' ? 'owner' : 'staff';
+      const role = currentMembership ? normalizeStoreMemberRole(currentMembership.role) : null;
       setCurrentUserRole(role);
 
-      if (role !== 'owner') {
-        Alert.alert('権限がありません', 'スタッフ一覧管理は店舗オーナーのみ利用できます。', [
+      if (!isStoreAdminRole(role)) {
+        Alert.alert('権限がありません', 'スタッフ一覧管理はオーナーまたは管理者のみ利用できます。', [
           { text: 'OK', onPress: () => router.back() },
         ]);
         setMembers([]);
@@ -117,9 +163,8 @@ export default function StaffListScreen() {
         const result: StaffMember[] = rpcResult.data.map((member: any) => ({
           id: member.id ?? `${activeStoreId}:${member.user_id}`,
           user_id: member.user_id,
-          role: member.role === 'owner' ? 'owner' : 'staff',
+          role: normalizeStoreMemberRole(member.role),
           created_at: member.created_at,
-          username: member.username ?? '',
           display_name: member.display_name ?? 'ユーザー',
           avatar_url: member.avatar_url ?? null,
           post_count: countMap.get(member.user_id) ?? 0,
@@ -154,7 +199,7 @@ export default function StaffListScreen() {
         ? await Promise.all([
           supabase
             .from('public_profiles')
-            .select('id, username, display_name, avatar_url')
+            .select('id, display_name, avatar_url')
             .in('id', userIds),
           supabase
             .from('posts')
@@ -175,9 +220,8 @@ export default function StaffListScreen() {
         return {
           id: m.id,
           user_id: m.user_id,
-          role: m.role,
+          role: normalizeStoreMemberRole(m.role),
           created_at: m.created_at,
-          username: profile?.username ?? `user_${m.user_id.slice(-6)}`,
           display_name: profile?.display_name ?? 'ユーザー',
           avatar_url: profile?.avatar_url ?? null,
           post_count: countMap.get(m.user_id) ?? 0,
@@ -195,7 +239,13 @@ export default function StaffListScreen() {
 
   useFocusEffect(useCallback(() => { loadMembers(); }, [loadMembers]));
 
-  const updateMemberRole = async (member: StaffMember, role: 'owner' | 'staff') => {
+  useEffect(() => {
+    return subscribeActiveStoreChanged(() => {
+      loadMembers();
+    });
+  }, [loadMembers]);
+
+  const updateMemberRole = async (member: StaffMember, role: StoreMemberRole) => {
     if (!activeStoreId) return;
     try {
       setActionLoading(true);
@@ -210,10 +260,7 @@ export default function StaffListScreen() {
       setMembers(prev => prev.map(item => (
         item.user_id === member.user_id ? { ...item, role } : item
       )));
-      Alert.alert('完了', role === 'owner'
-        ? '管理者権限を付与しました。'
-        : 'スタッフ権限に変更しました。'
-      );
+      Alert.alert('完了', `${getStoreRoleLabel(role)}に変更しました。`);
     } catch (error) {
       Alert.alert('エラー', getAdminActionErrorMessage(error));
     } finally {
@@ -221,16 +268,22 @@ export default function StaffListScreen() {
     }
   };
 
-  const confirmRoleChange = (member: StaffMember, role: 'owner' | 'staff') => {
-    if (member.user_id === currentUserId && role === 'staff') {
-      Alert.alert('変更不可', '自分自身の管理者権限は解除できません。');
+  const confirmRoleChange = (member: StaffMember, role: StoreMemberRole) => {
+    if (!canManageRoles) {
+      Alert.alert('権限がありません', '役割の変更は店舗オーナーのみ実行できます。');
       return;
     }
 
-    const title = role === 'owner' ? '管理者権限を付与' : 'スタッフ権限に戻す';
+    if (member.user_id === currentUserId && role !== 'owner') {
+      Alert.alert('変更不可', '自分自身のオーナー権限は解除できません。');
+      return;
+    }
+
+    const nextRoleLabel = getStoreRoleLabel(role);
+    const title = role === 'owner' ? 'オーナーにする' : `${nextRoleLabel}にする`;
     const message = role === 'owner'
-      ? `「${member.display_name}」に管理者権限を付与しますか？`
-      : `「${member.display_name}」をスタッフ権限に変更しますか？`;
+      ? `「${member.display_name}」をオーナーにしますか？\nオーナーはメンバー管理や重要な設定変更ができます。`
+      : `「${member.display_name}」を${nextRoleLabel}に変更しますか？`;
 
     Alert.alert(title, message, [
       { text: 'キャンセル', style: 'cancel' },
@@ -245,6 +298,10 @@ export default function StaffListScreen() {
     }
     if (member.role === 'owner' && ownerCount <= 1) {
       Alert.alert('削除不可', '店舗には少なくとも1名のオーナーが必要です。');
+      return;
+    }
+    if (currentUserRole === 'admin' && member.role !== 'staff') {
+      Alert.alert('削除不可', '管理者はスタッフのみ削除できます。');
       return;
     }
     if (!activeStoreId) return;
@@ -280,7 +337,7 @@ export default function StaffListScreen() {
 
   const openMemberActions = (member: StaffMember) => {
     if (!canManageMembers) {
-      Alert.alert('権限がありません', 'この操作は店舗オーナーのみ実行できます。');
+      Alert.alert('権限がありません', 'この操作はオーナーまたは管理者のみ実行できます。');
       return;
     }
     if (member.user_id === currentUserId) {
@@ -290,24 +347,42 @@ export default function StaffListScreen() {
 
     const actions: any[] = [{ text: 'キャンセル', style: 'cancel' }];
 
-    if (member.role === 'staff') {
-      actions.unshift({
-        text: '管理者権限を付与',
-        onPress: () => confirmRoleChange(member, 'owner'),
-      });
-    } else if (ownerCount > 1) {
-      actions.unshift({
-        text: 'スタッフ権限に戻す',
-        onPress: () => confirmRoleChange(member, 'staff'),
-      });
+    if (canManageRoles) {
+      const roleActions: { role: StoreMemberRole; label: string }[] = [];
+
+      if (member.role !== 'admin' && (member.role !== 'owner' || ownerCount > 1)) {
+        roleActions.push({ role: 'admin', label: '管理者にする' });
+      }
+      if (member.role !== 'staff' && (member.role !== 'owner' || ownerCount > 1)) {
+        roleActions.push({ role: 'staff', label: 'スタッフにする' });
+      }
+      if (member.role !== 'owner') {
+        roleActions.push({ role: 'owner', label: 'オーナーにする' });
+      }
+
+      actions.unshift(
+        ...roleActions.map(action => ({
+          text: action.label,
+          onPress: () => confirmRoleChange(member, action.role),
+        }))
+      );
     }
 
-    if (member.role === 'staff' || ownerCount > 1) {
+    const canRemoveMember = canManageRoles
+      ? member.role !== 'owner' || ownerCount > 1
+      : member.role === 'staff';
+
+    if (canRemoveMember) {
       actions.splice(actions.length - 1, 0, {
         text: '店舗から削除',
         style: 'destructive',
         onPress: () => handleRemoveMember(member),
       });
+    }
+
+    if (actions.length === 1) {
+      Alert.alert('操作できません', 'このメンバーに対して実行できる操作がありません。');
+      return;
     }
 
     Alert.alert('メンバー操作', `「${member.display_name}」に対する操作を選択してください。`, actions);
@@ -316,14 +391,20 @@ export default function StaffListScreen() {
   const renderItem = ({ item }: { item: StaffMember }) => {
     const joinedDate = new Date(item.created_at);
     const dateStr = `${joinedDate.getFullYear()}/${joinedDate.getMonth() + 1}/${joinedDate.getDate()} 参加`;
-    const isOwner = item.role === 'owner';
     const isCurrentUser = item.user_id === currentUserId;
+    const roleBadgeStyle = getRoleBadgeStyle(item.role, isDark);
 
     return (
       <View style={[styles.memberCard, { backgroundColor: colors.surface }]}>
         <View style={[styles.avatarContainer, { borderColor: colors.borderLight }]}>
           {item.avatar_url ? (
-            <Image source={{ uri: item.avatar_url }} style={styles.avatar} contentFit="cover" />
+            <Image
+              source={{ uri: resolveAvatarStorageUrl(item.avatar_url) }}
+              style={styles.avatar}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              recyclingKey={`staff-list-avatar-${item.user_id}`}
+            />
           ) : (
             <View style={[styles.defaultAvatar, { backgroundColor: colors.surface2 }]}>
               <Ionicons name="person" size={22} color={colors.textMuted} />
@@ -343,14 +424,13 @@ export default function StaffListScreen() {
             )}
             <View style={[
               styles.roleBadge,
-              { backgroundColor: isOwner ? (isDark ? '#3d2c00' : '#FFF4E0') : (isDark ? '#18304c' : '#EAF3FF') }
+              { backgroundColor: roleBadgeStyle.backgroundColor }
             ]}>
-              <Text style={[styles.roleText, { color: isOwner ? '#E07B00' : '#1F7AE0' }]}>
-                {isOwner ? 'オーナー' : 'スタッフ'}
+              <Text style={[styles.roleText, { color: roleBadgeStyle.color }]}>
+                {getStoreRoleLabel(item.role)}
               </Text>
             </View>
           </View>
-          <Text style={[styles.username, { color: colors.textMuted }]}>@{item.username}</Text>
           <View style={styles.metaRow}>
             <Ionicons name="images-outline" size={12} color={colors.textMuted} />
             <Text style={[styles.metaText, { color: colors.textMuted }]}>{item.post_count}件の投稿</Text>
@@ -420,6 +500,9 @@ export default function StaffListScreen() {
               <View style={styles.summaryRow}>
                 <View style={[styles.summaryPill, { backgroundColor: isDark ? '#3d2c00' : '#FFF4E0' }]}>
                   <Text style={styles.summaryOwnerText}>オーナー {ownerCount}</Text>
+                </View>
+                <View style={[styles.summaryPill, { backgroundColor: isDark ? '#12351F' : '#EAF8EF' }]}>
+                  <Text style={styles.summaryAdminText}>管理者 {adminCount}</Text>
                 </View>
                 <View style={[styles.summaryPill, { backgroundColor: isDark ? '#18304c' : '#EAF3FF' }]}>
                   <Text style={styles.summaryStaffText}>スタッフ {staffCount}</Text>
@@ -499,6 +582,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#E07B00',
   },
+  summaryAdminText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1F8A49',
+  },
   summaryStaffText: {
     fontSize: 12,
     fontWeight: '700',
@@ -566,10 +654,6 @@ const styles = StyleSheet.create({
   roleText: {
     fontSize: 11,
     fontWeight: '700',
-  },
-  username: {
-    fontSize: 12,
-    marginBottom: 4,
   },
   metaRow: {
     flexDirection: 'row',

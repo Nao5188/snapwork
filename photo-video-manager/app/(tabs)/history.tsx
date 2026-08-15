@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -10,7 +10,6 @@ import {
   StatusBar,
   SafeAreaView,
   Animated,
-  Image as RNImage,
   Modal,
   ScrollView,
   Dimensions,
@@ -21,7 +20,20 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
-import { postService, authService, supabase, userService } from '@/lib/supabase';
+import { postService, authService, storeService, supabase, userService } from '@/lib/supabase';
+import { isStoreAdminRole, normalizeStoreMemberRole } from '@/lib/storeRoles';
+import type { StoreMemberRole } from '@/lib/storeRoles';
+import {
+  getMediaThumbnailUrl,
+  hasDedicatedThumbnail,
+  shouldRefreshLegacyVideoThumbnail,
+} from '@/lib/mediaThumbnails';
+import {
+  getSignedPostMediaUrl,
+  useSignedStorageUrlResolver,
+} from '@/lib/signedStorageUrls';
+import { useVideoThumbnailRepair } from '@/lib/useVideoThumbnailRepair';
+import { subscribeActiveStoreChanged } from '@/lib/activeStoreEvents';
 import PostCard from '@/components/PostCard';
 import { PostCardSkeleton } from '@/components/SkeletonLoader';
 import DrawerMenu from '@/components/DrawerMenu';
@@ -29,6 +41,8 @@ import { useAppTheme } from '@/lib/ThemeContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const HEADER_LOGO = require('@/assets/images/HCINCLogo.png');
+
+type ReviewStatus = 'pending' | 'approved' | 'revision_requested' | 'rejected';
 
 interface PostHistoryItem {
   id: string;
@@ -41,6 +55,7 @@ interface PostHistoryItem {
   description?: string;
   created_at: string;
   user_id: string;
+  review_status?: ReviewStatus;
   isOwner?: boolean;
   mediaItems?: {
     id: string;
@@ -63,8 +78,14 @@ export default function HistoryScreen() {
   const [loading, setLoading] = useState(true);
   const [downloadModalPost, setDownloadModalPost] = useState<PostHistoryItem | null>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  const [thumbnailErrors, setThumbnailErrors] = useState<Set<string>>(new Set());
+  const {
+    failedKeys: failedVideoThumbnailKeys,
+    repairVideoThumbnail,
+    thumbnailUrls: repairedVideoThumbnailUrls,
+  } = useVideoThumbnailRepair();
   const [drawerVisible, setDrawerVisible] = useState(false);
-  const [userRole, setUserRole] = useState<'owner' | 'staff' | null>(null);
+  const [userRole, setUserRole] = useState<StoreMemberRole | null>(null);
   const { colors, isDark } = useAppTheme();
 
   const flatListRef = useRef<FlatList>(null);
@@ -102,22 +123,22 @@ export default function HistoryScreen() {
         return;
       }
 
-      const { data: memberData } = await supabase
-        .from('store_members')
-        .select('store_id, role')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      const activeStoreId = memberData?.store_id ?? null;
-      setUserRole((memberData?.role as 'owner' | 'staff') ?? null);
-
+      const activeStoreId = await storeService.getActiveStoreId(user.id);
       if (!activeStoreId) {
+        setUserRole(null);
         setPosts([]);
         router.replace('/store-onboarding');
         return;
       }
+
+      const { data: memberData } = await supabase
+        .from('store_members')
+        .select('role')
+        .eq('user_id', user.id)
+        .eq('store_id', activeStoreId)
+        .maybeSingle();
+
+      setUserRole(memberData ? normalizeStoreMemberRole(memberData.role) : null);
 
       const { data: currentProfile } = await supabase
         .from('users')
@@ -304,6 +325,12 @@ export default function HistoryScreen() {
     }, [loadPosts])
   );
 
+  useEffect(() => {
+    return subscribeActiveStoreChanged(() => {
+      loadPosts();
+    });
+  }, [loadPosts]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await loadPosts();
@@ -345,28 +372,104 @@ export default function HistoryScreen() {
     );
   };
 
-  const getDownloadItems = (post: PostHistoryItem) => {
+  const getDownloadItems = useCallback((post: PostHistoryItem) => {
     if (post.mediaItems && post.mediaItems.length > 0) return post.mediaItems;
     if (post.media_url) {
       return [{ id: 'main', media_url: post.media_url, is_video: post.is_video, display_order: 0 }];
     }
     return [];
+  }, []);
+
+  const downloadPreviewStorageUrls = useMemo(() => {
+    if (!downloadModalPost) return [];
+
+    return getDownloadItems(downloadModalPost).flatMap((item) => {
+      const thumbnailKey = `${downloadModalPost.id}:${item.id}`;
+      const thumbnailUrl = getMediaThumbnailUrl(item.media_url);
+      const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey];
+
+      return repairedThumbnailUrl
+        ? [thumbnailUrl, repairedThumbnailUrl]
+        : [thumbnailUrl];
+    });
+  }, [downloadModalPost, getDownloadItems, repairedVideoThumbnailUrls]);
+  const resolveDownloadPreviewStorageUrl = useSignedStorageUrlResolver('posts', downloadPreviewStorageUrls);
+  const resolveDownloadVideoThumbnailStorageUrl = useSignedStorageUrlResolver(
+    'posts',
+    downloadPreviewStorageUrls,
+    { deferStorageUrlsUntilSigned: true },
+  );
+
+  useEffect(() => {
+    if (!downloadModalPost || !shouldRefreshLegacyVideoThumbnail(downloadModalPost.created_at)) {
+      return;
+    }
+
+    getDownloadItems(downloadModalPost).forEach((item) => {
+      if (item.is_video && hasDedicatedThumbnail(item.media_url)) {
+        const thumbnailKey = `${downloadModalPost.id}:${item.id}`;
+        repairVideoThumbnail(thumbnailKey, item.media_url, { markFailed: false });
+      }
+    });
+  }, [downloadModalPost, getDownloadItems, repairVideoThumbnail]);
+
+  const updatePostReviewStatus = async (postId: string) => {
+    const { error } = await supabase.rpc('set_post_review_status', {
+      p_post_ids: [postId],
+      p_status: 'approved',
+    } as any);
+
+    if (error) throw error;
+
+    setPosts(prevPosts => prevPosts.map(post => (
+      post.id === postId
+        ? { ...post, review_status: 'approved' }
+        : post
+    )));
+  };
+
+  const getReviewStatusErrorMessage = (error: any) => {
+    const message = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`;
+
+    if (
+      error?.code === 'PGRST202'
+      || error?.code === 'PGRST204'
+      || error?.code === '42703'
+      || message.includes('set_post_review_status')
+      || message.includes('review_status')
+    ) {
+      return '承認機能用のDB更新状況を確認してください。';
+    }
+
+    if (error?.code === '42501' || message.includes('permission')) {
+      return '店舗のオーナーまたは管理者権限を確認してください。';
+    }
+
+    return message.trim() || 'フィルタ検索から承認ステータスを変更してください。';
   };
 
   const executeDownload = async (post: PostHistoryItem, indices: number[]) => {
     const items = getDownloadItems(post);
+    const targetItems = indices
+      .map(index => ({ item: items[index], index }))
+      .filter(({ item }) => Boolean(item?.media_url));
+
+    if (targetItems.length !== indices.length || targetItems.length === 0) {
+      Alert.alert('エラー', '保存対象のメディアを確認できませんでした。');
+      return;
+    }
+
     let successCount = 0;
-    for (const i of indices) {
-      const item = items[i];
-      if (!item?.media_url) continue;
+    for (const { item, index } of targetItems) {
       try {
         let saveUri: string;
         if (item.media_url.startsWith('file://')) {
           saveUri = item.media_url;
         } else {
           const ext = item.is_video ? 'mp4' : 'jpg';
-          const fileUri = `${FileSystem.cacheDirectory}media_${Date.now()}_${i}.${ext}`;
-          const result = await FileSystem.downloadAsync(item.media_url, fileUri);
+          const fileUri = `${FileSystem.cacheDirectory}media_${Date.now()}_${index}.${ext}`;
+          const downloadUrl = await getSignedPostMediaUrl(item.media_url);
+          const result = await FileSystem.downloadAsync(downloadUrl, fileUri);
           if (!result?.uri) continue;
           saveUri = result.uri;
         }
@@ -376,14 +479,36 @@ export default function HistoryScreen() {
         console.error('Failed to save item:', itemError);
       }
     }
-    if (successCount > 0) {
-      Alert.alert('保存完了', `${successCount}枚をカメラロールに保存しました。`);
-    } else {
-      Alert.alert('エラー', '画像の保存に失敗しました。');
+
+    if (successCount !== targetItems.length) {
+      Alert.alert(
+        '保存未完了',
+        `${successCount}/${targetItems.length}件を保存しました。すべて保存できなかったため、承認ステータスは変更していません。`
+      );
+      return;
+    }
+
+    if (post.review_status === 'approved') {
+      Alert.alert('保存完了', `${successCount}件のメディアをカメラロールに保存しました。`);
+      return;
+    }
+
+    try {
+      await updatePostReviewStatus(post.id);
+      Alert.alert(
+        '保存・承認完了',
+        `${successCount}件のメディアをカメラロールに保存し、投稿を承認済みにしました。`
+      );
+    } catch (error: any) {
+      console.error('Failed to approve saved post:', error);
+      Alert.alert(
+        '保存完了・承認失敗',
+        `メディアは保存しましたが、承認済みへの変更に失敗しました。\n${getReviewStatusErrorMessage(error)}`
+      );
     }
   };
 
-  const handleDownloadPost = async (post: PostHistoryItem) => {
+  const prepareDownloadPost = async (post: PostHistoryItem) => {
     const { status } = await MediaLibrary.requestPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('権限エラー', 'カメラロールへのアクセス権限が必要です。\n設定からアクセスを許可してください。');
@@ -400,6 +525,27 @@ export default function HistoryScreen() {
       setDownloadModalPost(post);
       setSelectedIndices(new Set(items.map((_, i) => i)));
     }
+  };
+
+  const handleDownloadPost = (post: PostHistoryItem) => {
+    if (post.review_status === 'rejected') {
+      Alert.alert(
+        '却下済みの投稿',
+        'この投稿を承認済みに変更して、メディアを保存しますか？',
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          {
+            text: '保存して承認',
+            onPress: () => {
+              void prepareDownloadPost(post);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    void prepareDownloadPost(post);
   };
 
   const handleLike = (_postId: string) => {
@@ -442,7 +588,8 @@ export default function HistoryScreen() {
         showProfile={true}
         onEdit={() => handleEditPost(item)}
         onDelete={() => handleDeletePost(item)}
-        onDownload={userRole === 'owner' ? () => handleDownloadPost(item) : undefined}
+        onDownload={isStoreAdminRole(userRole) ? () => handleDownloadPost(item) : undefined}
+        downloadLabel={item.review_status === 'approved' ? '保存' : '保存して承認'}
         onLike={() => handleLike(item.id)}
       />
     );
@@ -480,6 +627,7 @@ export default function HistoryScreen() {
     if (!downloadModalPost) return null;
     const items = getDownloadItems(downloadModalPost);
     const allSelected = selectedIndices.size === items.length;
+    const shouldApprove = downloadModalPost.review_status !== 'approved';
     const thumbnailSize = (SCREEN_WIDTH - 40 - 8) / 3;
 
     const toggleIndex = (i: number) => {
@@ -518,7 +666,7 @@ export default function HistoryScreen() {
               <Ionicons
                 name={allSelected ? 'checkmark-circle' : 'checkmark-circle-outline'}
                 size={18}
-                color={allSelected ? '#444444' : '#888'}
+                color={allSelected ? '#2196F3' : '#888'}
               />
               <Text style={[styles.selectAllText, allSelected && styles.selectAllTextActive]}>
                 {allSelected ? '選択を解除' : 'すべて選択'}
@@ -528,6 +676,16 @@ export default function HistoryScreen() {
             <ScrollView style={styles.thumbnailScroll} contentContainerStyle={styles.thumbnailGrid}>
               {items.map((item, index) => {
                 const isSelected = selectedIndices.has(index);
+                const thumbnailKey = `${downloadModalPost.id}:${item.id}`;
+                const thumbnailFailed = item.is_video
+                  ? failedVideoThumbnailKeys.has(thumbnailKey)
+                  : thumbnailErrors.has(thumbnailKey);
+                const thumbnailUrl = getMediaThumbnailUrl(item.media_url);
+                const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey] ?? thumbnailUrl;
+                const hasThumbnail = hasDedicatedThumbnail(item.media_url);
+                const resolvedThumbnailUrl = item.is_video
+                  ? resolveDownloadVideoThumbnailStorageUrl(repairedThumbnailUrl)
+                  : resolveDownloadPreviewStorageUrl(thumbnailUrl);
                 return (
                   <TouchableOpacity
                     key={item.id}
@@ -535,11 +693,30 @@ export default function HistoryScreen() {
                     onPress={() => toggleIndex(index)}
                     activeOpacity={0.8}
                   >
-                    <RNImage
-                      source={{ uri: item.media_url }}
-                      style={styles.thumbnailImage}
-                      resizeMode="cover"
-                    />
+                    {thumbnailFailed || (item.is_video && !hasThumbnail) || !resolvedThumbnailUrl ? (
+                      <View style={[styles.thumbnailImage, styles.videoThumbnailFallback]}>
+                        <Ionicons
+                          name={item.is_video ? 'videocam-outline' : 'image-outline'}
+                          size={28}
+                          color="#888"
+                        />
+                      </View>
+                    ) : (
+                      <Image
+                        source={{ uri: resolvedThumbnailUrl }}
+                        style={styles.thumbnailImage}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        recyclingKey={`history-download-${thumbnailKey}`}
+                        onError={() => {
+                          if (item.is_video && hasThumbnail) {
+                            repairVideoThumbnail(thumbnailKey, item.media_url, { force: true });
+                          } else if (!thumbnailFailed && hasThumbnail) {
+                            setThumbnailErrors(prev => new Set(prev).add(thumbnailKey));
+                          }
+                        }}
+                      />
+                    )}
                     {item.is_video && (
                       <View style={styles.videoIcon}>
                         <Ionicons name="play" size={14} color="#fff" />
@@ -573,7 +750,9 @@ export default function HistoryScreen() {
                 activeOpacity={0.8}
               >
                 <Ionicons name="download-outline" size={18} color="#fff" />
-                <Text style={styles.modalSaveText}>保存 ({selectedIndices.size}枚)</Text>
+                <Text style={styles.modalSaveText}>
+                  {shouldApprove ? '保存して承認' : '保存'} ({selectedIndices.size}枚)
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -722,7 +901,7 @@ const styles = StyleSheet.create({
   emptyButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#444444',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 14,
@@ -797,7 +976,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   selectAllTextActive: {
-    color: '#444444',
+    color: '#2196F3',
   },
   thumbnailScroll: {
     maxHeight: 340,
@@ -816,6 +995,11 @@ const styles = StyleSheet.create({
   thumbnailImage: {
     width: '100%',
     height: '100%',
+  },
+  videoThumbnailFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E5E7EB',
   },
   thumbnailOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -846,8 +1030,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   checkCircleSelected: {
-    backgroundColor: '#444444',
-    borderColor: '#444444',
+    backgroundColor: '#2196F3',
+    borderColor: '#2196F3',
   },
   modalButtons: {
     flexDirection: 'row',
@@ -872,7 +1056,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingVertical: 14,
     borderRadius: 14,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#2196F3',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,

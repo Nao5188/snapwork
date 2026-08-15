@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,10 +10,14 @@ import {
   StatusBar,
   ActivityIndicator,
   TextInput,
+  KeyboardAvoidingView,
   ScrollView,
   Modal,
+  Pressable,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Video, ResizeMode } from 'expo-av';
@@ -23,21 +27,41 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { authService, storeService, supabase } from '@/lib/supabase';
+import { getStoreRoleLabel, isStoreAdminRole, normalizeStoreMemberRole } from '@/lib/storeRoles';
+import type { StoreMemberRole, StoreRoleFilter } from '@/lib/storeRoles';
+import {
+  getMediaThumbnailUrl,
+  hasDedicatedThumbnail,
+  shouldRefreshLegacyVideoThumbnail,
+} from '@/lib/mediaThumbnails';
+import {
+  getSignedPostMediaUrl,
+  useSignedStorageUrlResolver,
+} from '@/lib/signedStorageUrls';
+import { useVideoThumbnailRepair } from '@/lib/useVideoThumbnailRepair';
+import { subscribeActiveStoreChanged } from '@/lib/activeStoreEvents';
 import { useAppTheme } from '@/lib/ThemeContext';
 
-type RoleFilter = 'all' | 'owner' | 'staff';
-type PeriodFilter = 'all' | 'today' | 'week' | 'month' | '3months';
+type RoleFilter = StoreRoleFilter;
+type PeriodFilter = 'all' | 'today' | 'week' | 'month' | 'custom';
 type MediaFilter = 'all' | 'photo' | 'video';
-type SortFilter = 'newest' | 'oldest' | 'popular';
-type ReviewStatus = 'pending' | 'approved' | 'revision_requested' | 'rejected';
+type SortFilter = 'newest' | 'oldest';
+type ReviewStatus = 'pending' | 'approved' | 'rejected';
 type ReviewStatusFilter = 'all' | ReviewStatus;
+type SelectedMediaFilter = Exclude<MediaFilter, 'all'>;
+type ManualDateField = 'start' | 'end';
+
+interface ManualPeriodRange {
+  startDate: Date;
+  endDate: Date;
+}
 
 interface StaffOption {
   user_id: string;
   display_name: string;
   username: string;
   avatar_url?: string | null;
-  role: 'owner' | 'staff';
+  role: StoreMemberRole;
 }
 
 interface MediaItem {
@@ -54,7 +78,6 @@ interface PostItem {
   displayMenuName: string;
   media_url: string;
   is_video: boolean;
-  likes_count: number;
   created_at: string;
   user_id: string;
   review_status: ReviewStatus;
@@ -67,21 +90,24 @@ interface PostItem {
   };
 }
 
-const ACCENT = '#2F6BFF';
-const ACCENT_SOFT = '#EEF3FF';
+const ACCENT = '#2196F3';
+const ACCENT_SOFT = '#EAF4FE';
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
+const getStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}:${storeId}`;
+const getLegacyStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}_${storeId}`;
 
 const PERIOD_OPTIONS: { label: string; value: PeriodFilter }[] = [
   { label: 'すべて', value: 'all' },
   { label: '今日', value: 'today' },
   { label: '今週', value: 'week' },
   { label: '今月', value: 'month' },
-  { label: '3ヶ月', value: '3months' },
+  { label: '手動', value: 'custom' },
 ];
 
 const ROLE_OPTIONS: { label: string; value: RoleFilter }[] = [
   { label: 'すべて', value: 'all' },
   { label: 'オーナー', value: 'owner' },
+  { label: '管理者', value: 'admin' },
   { label: 'スタッフ', value: 'staff' },
 ];
 
@@ -95,12 +121,11 @@ const SORT_OPTIONS: {
   label: string;
   value: SortFilter;
   icon: keyof typeof Ionicons.glyphMap;
-  column: 'created_at' | 'likes_count';
+  column: 'created_at';
   ascending: boolean;
 }[] = [
   { label: '新しい順（投稿日）', value: 'newest', icon: 'arrow-down-outline', column: 'created_at', ascending: false },
   { label: '古い順（投稿日）', value: 'oldest', icon: 'arrow-up-outline', column: 'created_at', ascending: true },
-  { label: '人気順（いいね）', value: 'popular', icon: 'heart-outline', column: 'likes_count', ascending: false },
 ];
 
 const REVIEW_STATUS_OPTIONS: {
@@ -128,14 +153,6 @@ const REVIEW_STATUS_OPTIONS: {
     textColor: '#1F7A3D',
   },
   {
-    label: '修正依頼',
-    value: 'revision_requested',
-    icon: 'create-outline',
-    backgroundColor: '#FFF0ED',
-    borderColor: '#FFC8BC',
-    textColor: '#B33A24',
-  },
-  {
     label: '却下',
     value: 'rejected',
     icon: 'close-circle-outline',
@@ -151,36 +168,42 @@ const REVIEW_STATUS_FILTER_OPTIONS: {
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
   { label: 'すべて', value: 'all', icon: 'apps-outline' },
-  ...REVIEW_STATUS_OPTIONS.map(option => ({
-    label: option.label,
-    value: option.value,
-    icon: option.icon,
-  })),
+  ...REVIEW_STATUS_OPTIONS
+    .filter(option => option.value === 'pending' || option.value === 'approved')
+    .map(option => ({
+      label: option.label,
+      value: option.value,
+      icon: option.icon,
+    })),
 ];
 
-const DEFAULT_CATEGORY_OPTIONS: {
+type CategoryOption = {
   label: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
-}[] = [
+};
+
+const DEFAULT_CATEGORY_OPTIONS: CategoryOption[] = [
   { label: 'すべて', value: 'all', icon: 'apps-outline' },
   { label: 'カット', value: 'カット', icon: 'cut-outline' },
   { label: 'カラー', value: 'カラー', icon: 'color-palette-outline' },
   { label: 'パーマ', value: 'パーマ', icon: 'water-outline' },
+  { label: 'ブリーチ', value: 'ブリーチ', icon: 'sparkles-outline' },
   { label: '縮毛', value: '縮毛', icon: 'sparkles-outline' },
   { label: 'トリートメント', value: 'トリートメント', icon: 'flask-outline' },
-  { label: 'ヘッドスパ', value: 'ヘッドスパ', icon: 'happy-outline' },
 ];
 
 const CATEGORY_ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   カット: 'cut-outline',
   カラー: 'color-palette-outline',
   パーマ: 'water-outline',
+  ブリーチ: 'sparkles-outline',
   縮毛: 'sparkles-outline',
   縮毛矯正: 'sparkles-outline',
   トリートメント: 'flask-outline',
-  ヘッドスパ: 'happy-outline',
 };
+
+const HIDDEN_CATEGORY_VALUES = new Set(['ヘッドスパ']);
 
 function getPeriodStart(period: PeriodFilter): string | null {
   const now = new Date();
@@ -197,14 +220,43 @@ function getPeriodStart(period: PeriodFilter): string | null {
       d.setMonth(d.getMonth() - 1);
       return d.toISOString();
     }
-    case '3months': {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 3);
-      return d.toISOString();
-    }
     default:
       return null;
   }
+}
+
+function startOfDay(date: Date) {
+  const nextDate = new Date(date);
+  nextDate.setHours(0, 0, 0, 0);
+  return nextDate;
+}
+
+function endOfDay(date: Date) {
+  const nextDate = new Date(date);
+  nextDate.setHours(23, 59, 59, 999);
+  return nextDate;
+}
+
+function createDefaultManualPeriodRange(): ManualPeriodRange {
+  const endDate = endOfDay(new Date());
+  const startDate = startOfDay(new Date());
+  startDate.setMonth(startDate.getMonth() - 3);
+
+  return { startDate, endDate };
+}
+
+function getPeriodRange(period: PeriodFilter, manualRange: ManualPeriodRange) {
+  if (period === 'custom') {
+    return {
+      startIso: manualRange.startDate.toISOString(),
+      endIso: manualRange.endDate.toISOString(),
+    };
+  }
+
+  return {
+    startIso: getPeriodStart(period),
+    endIso: null,
+  };
 }
 
 function formatDate(date: Date) {
@@ -214,8 +266,12 @@ function formatDate(date: Date) {
   return `${y}/${m}/${d}`;
 }
 
-function getPeriodLabel(period: PeriodFilter) {
+function getPeriodLabel(period: PeriodFilter, manualRange: ManualPeriodRange) {
   const now = new Date();
+  if (period === 'custom') {
+    return `${formatDate(manualRange.startDate)} 〜 ${formatDate(manualRange.endDate)}`;
+  }
+
   const startIso = getPeriodStart(period);
   if (!startIso) return 'すべての期間';
   return `${formatDate(new Date(startIso))} 〜 ${formatDate(now)}`;
@@ -249,7 +305,7 @@ function parseMenuName(rawMenuName: string) {
   const categories = categoryText
     .split(',')
     .map(category => normalizeCategory(category))
-    .filter(Boolean);
+    .filter(category => category.length > 0 && !isHiddenCategory(category));
 
   return {
     displayMenuName: displayMenuName.trim(),
@@ -261,10 +317,20 @@ function normalizeCategory(category: string) {
   return category.trim().normalize('NFKC');
 }
 
-function categoryMatches(postCategories: string[], selectedCategory: string) {
-  if (selectedCategory === 'all') return true;
-  const normalizedSelectedCategory = normalizeCategory(selectedCategory);
-  return postCategories.some(category => normalizeCategory(category) === normalizedSelectedCategory);
+function isHiddenCategory(category: string) {
+  return HIDDEN_CATEGORY_VALUES.has(normalizeCategory(category));
+}
+
+function categoryMatches(postCategories: string[], selectedCategories: string[]) {
+  if (selectedCategories.length === 0) return true;
+  const normalizedSelectedCategories = new Set(selectedCategories.map(category => normalizeCategory(category)));
+  return postCategories.some(category => normalizedSelectedCategories.has(normalizeCategory(category)));
+}
+
+function toggleSelection<T extends string>(selectedValues: T[], value: T) {
+  return selectedValues.includes(value)
+    ? selectedValues.filter(selectedValue => selectedValue !== value)
+    : [...selectedValues, value];
 }
 
 function parseStoredCategories(value: string | null) {
@@ -275,7 +341,7 @@ function parseStoredCategories(value: string | null) {
     if (Array.isArray(parsed)) {
       return parsed
         .map(category => normalizeCategory(`${category}`))
-        .filter(Boolean);
+        .filter(category => category.length > 0 && !isHiddenCategory(category));
     }
   } catch {
     // Older values may be comma-separated plain text.
@@ -284,7 +350,7 @@ function parseStoredCategories(value: string | null) {
   return value
     .split(',')
     .map(category => normalizeCategory(category))
-    .filter(Boolean);
+    .filter(category => category.length > 0 && !isHiddenCategory(category));
 }
 
 function buildCategoryOptions(categories: string[]) {
@@ -294,7 +360,7 @@ function buildCategoryOptions(categories: string[]) {
 
   categories.forEach(category => {
     const normalizedCategory = normalizeCategory(category);
-    if (!normalizedCategory || seen.has(normalizedCategory)) return;
+    if (!normalizedCategory || isHiddenCategory(normalizedCategory) || seen.has(normalizedCategory)) return;
     seen.add(normalizedCategory);
     options.push({
       label: normalizedCategory,
@@ -309,7 +375,6 @@ function buildCategoryOptions(categories: string[]) {
 function normalizeReviewStatus(status: unknown): ReviewStatus {
   if (
     status === 'approved'
-    || status === 'revision_requested'
     || status === 'rejected'
     || status === 'pending'
   ) {
@@ -327,6 +392,36 @@ function isMissingReviewStatusError(error: any) {
   return message.includes('review_status') || error?.code === '42703' || error?.code === 'PGRST204';
 }
 
+function getReviewStatusUpdateErrorMessage(error: any) {
+  const rawMessage = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`;
+
+  if (
+    isMissingReviewStatusError(error)
+    || error?.code === 'PGRST202'
+    || rawMessage.includes('set_post_review_status')
+  ) {
+    return '承認機能用のDB更新が必要です。Supabaseで database/post_review_status.sql を実行してください。';
+  }
+
+  if (rawMessage.includes('Only store owners can change review status')) {
+    return '承認変更用のDB関数が古い状態です。管理者でも承認変更できるよう、Supabaseで database/post_review_status.sql を再実行してください。';
+  }
+
+  if (rawMessage.includes('Only store owners and admins can change review status')) {
+    return 'この操作は店舗のオーナーまたは管理者のみ実行できます。役割設定を確認してください。';
+  }
+
+  if (error?.code === '42501' || rawMessage.includes('row-level security') || rawMessage.includes('permission')) {
+    return '承認変更用SQLの適用状況、または店舗の役割設定を確認してください。';
+  }
+
+  return rawMessage.trim() || 'もう一度お試しください。';
+}
+
+function getMediaThumbnailKey(postId: string, media: MediaItem) {
+  return `${postId}:${media.id}:${media.mediaUrl}`;
+}
+
 export default function FilterSearchScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
@@ -336,25 +431,38 @@ export default function FilterSearchScreen() {
   const [posts, setPosts] = useState<PostItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState<StoreMemberRole | null>(null);
   const [sortModalVisible, setSortModalVisible] = useState(false);
   const [staffModalVisible, setStaffModalVisible] = useState(false);
+  const [manualPeriodModalVisible, setManualPeriodModalVisible] = useState(false);
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedPostIds, setSelectedPostIds] = useState<Set<string>>(new Set());
   const [previewPost, setPreviewPost] = useState<PostItem | null>(null);
   const [previewMediaIndex, setPreviewMediaIndex] = useState(0);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [thumbnailErrors, setThumbnailErrors] = useState<Set<string>>(new Set());
+  const {
+    failedKeys: failedVideoThumbnailKeys,
+    repairVideoThumbnail,
+    thumbnailUrls: repairedVideoThumbnailUrls,
+  } = useVideoThumbnailRepair();
   const isFocusedRef = useRef(false);
 
   const [searchText, setSearchText] = useState('');
   const [staffSearchText, setStaffSearchText] = useState('');
   const [staffPickerRole, setStaffPickerRole] = useState<RoleFilter>('all');
   const [selectedStaff, setSelectedStaff] = useState<string>('all');
-  const [selectedRole, setSelectedRole] = useState<RoleFilter>('all');
+  const [selectedRoles, setSelectedRoles] = useState<StoreMemberRole[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodFilter>('all');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [selectedMedia, setSelectedMedia] = useState<MediaFilter>('all');
-  const [selectedReviewStatus, setSelectedReviewStatus] = useState<ReviewStatusFilter>('all');
+  const [manualPeriodRange, setManualPeriodRange] = useState<ManualPeriodRange>(() => createDefaultManualPeriodRange());
+  const [tempManualPeriodRange, setTempManualPeriodRange] = useState<ManualPeriodRange>(() => createDefaultManualPeriodRange());
+  const [activeManualDateField, setActiveManualDateField] = useState<ManualDateField | null>(null);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedMediaTypes, setSelectedMediaTypes] = useState<SelectedMediaFilter[]>([]);
+  const [selectedReviewStatuses, setSelectedReviewStatuses] = useState<ReviewStatus[]>([]);
   const [selectedSort, setSelectedSort] = useState<SortFilter>('newest');
 
   const sortOption = useMemo(
@@ -367,7 +475,57 @@ export default function FilterSearchScreen() {
     [posts, selectedPostIds]
   );
 
-  const selectionMode = selectedPostIds.size > 0;
+  const canUseAdminFilters = isStoreAdminRole(currentUserRole);
+  const selectionMode = canUseAdminFilters && selectedPostIds.size > 0;
+
+  const postStorageUrls = useMemo(() => (
+    posts.flatMap((post) => {
+      const mediaItems = post.mediaItems.length > 0
+        ? post.mediaItems
+        : post.media_url
+          ? [{
+              id: 'main',
+              mediaUrl: post.media_url,
+              isVideo: post.is_video,
+              displayOrder: 0,
+            }]
+          : [];
+
+      return mediaItems.flatMap((media) => {
+        const thumbnailKey = getMediaThumbnailKey(post.id, media);
+        const thumbnailUrl = getMediaThumbnailUrl(media.mediaUrl);
+        const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey];
+
+        return repairedThumbnailUrl
+          ? [media.mediaUrl, thumbnailUrl, repairedThumbnailUrl]
+          : [media.mediaUrl, thumbnailUrl];
+      });
+    })
+  ), [posts, repairedVideoThumbnailUrls]);
+  const resolvePostStorageUrl = useSignedStorageUrlResolver('posts', postStorageUrls);
+  const resolveVideoThumbnailStorageUrl = useSignedStorageUrlResolver(
+    'posts',
+    postStorageUrls,
+    { deferStorageUrlsUntilSigned: true },
+  );
+
+  const avatarStorageUrls = useMemo(() => ([
+    ...staffOptions.map(staff => staff.avatar_url),
+    ...posts.map(post => post.users?.avatar_url),
+  ]), [posts, staffOptions]);
+  const resolveAvatarStorageUrl = useSignedStorageUrlResolver('avatars', avatarStorageUrls);
+
+  useEffect(() => {
+    posts.forEach((post) => {
+      if (!shouldRefreshLegacyVideoThumbnail(post.created_at)) return;
+
+      post.mediaItems.forEach((media) => {
+        if (media.isVideo && hasDedicatedThumbnail(media.mediaUrl)) {
+          repairVideoThumbnail(getMediaThumbnailKey(post.id, media), media.mediaUrl, { markFailed: false });
+        }
+      });
+    });
+  }, [posts, repairVideoThumbnail]);
 
   const selectedStaffOption = useMemo(
     () => staffOptions.find(staff => staff.user_id === selectedStaff) ?? null,
@@ -376,7 +534,7 @@ export default function FilterSearchScreen() {
 
   const selectedStaffLabel = selectedStaffOption?.display_name ?? 'すべてのスタッフ';
   const selectedStaffMeta = selectedStaffOption
-    ? (selectedStaffOption.role === 'owner' ? 'オーナー' : 'スタッフ')
+    ? getStoreRoleLabel(selectedStaffOption.role)
     : `${staffOptions.length}名から選択`;
 
   const filteredStaffOptions = useMemo(() => {
@@ -395,11 +553,14 @@ export default function FilterSearchScreen() {
     setStaffSearchText('');
     setStaffPickerRole('all');
     setSelectedStaff('all');
-    setSelectedRole('all');
+    setSelectedRoles([]);
     setSelectedPeriod('all');
-    setSelectedCategory('all');
-    setSelectedMedia('all');
-    setSelectedReviewStatus('all');
+    setManualPeriodRange(createDefaultManualPeriodRange());
+    setTempManualPeriodRange(createDefaultManualPeriodRange());
+    setActiveManualDateField(null);
+    setSelectedCategories([]);
+    setSelectedMediaTypes([]);
+    setSelectedReviewStatuses([]);
     setSelectedSort('newest');
     setPosts([]);
     setHasSearched(false);
@@ -408,6 +569,10 @@ export default function FilterSearchScreen() {
     setPreviewMediaIndex(0);
     setSortModalVisible(false);
     setStaffModalVisible(false);
+    setManualPeriodModalVisible(false);
+    setCategoryModalVisible(false);
+    setNewCategoryName('');
+    setCurrentUserRole(null);
   }, []);
 
   const loadStoreStaffOptions = useCallback(async (storeId: string, currentUserId: string) => {
@@ -421,7 +586,7 @@ export default function FilterSearchScreen() {
         username: member.username ?? '',
         display_name: member.display_name ?? 'ユーザー',
         avatar_url: member.avatar_url ?? null,
-        role: member.role === 'owner' ? 'owner' : 'staff',
+        role: normalizeStoreMemberRole(member.role),
       })) as StaffOption[];
     }
 
@@ -441,7 +606,7 @@ export default function FilterSearchScreen() {
     ]);
 
     const members = membersData ?? [];
-    const roleMap = new Map(members.map(member => [member.user_id, member.role as 'owner' | 'staff']));
+    const roleMap = new Map(members.map(member => [member.user_id, normalizeStoreMemberRole(member.role)]));
     const userIds = Array.from(new Set([
       ...members.map(member => member.user_id),
       ...(storePostUsers ?? []).map(post => post.user_id),
@@ -469,10 +634,9 @@ export default function FilterSearchScreen() {
   }, []);
 
   const loadCategoryOptions = useCallback(async (storeId: string) => {
-    const [globalStored, storeStored, legacyStoreStored] = await Promise.all([
-      AsyncStorage.getItem(CUSTOM_CATEGORIES_KEY),
-      AsyncStorage.getItem(`${CUSTOM_CATEGORIES_KEY}:${storeId}`),
-      AsyncStorage.getItem(`${CUSTOM_CATEGORIES_KEY}_${storeId}`),
+    const [storeStored, legacyStoreStored] = await Promise.all([
+      AsyncStorage.getItem(getStoreCustomCategoriesKey(storeId)),
+      AsyncStorage.getItem(getLegacyStoreCustomCategoriesKey(storeId)),
     ]);
 
     const { data: storePosts } = await supabase
@@ -482,7 +646,6 @@ export default function FilterSearchScreen() {
 
     const usedCategories = (storePosts ?? []).flatMap(post => parseMenuName(post.menu_name ?? '').categories);
     const savedCategories = [
-      ...parseStoredCategories(globalStored),
       ...parseStoredCategories(storeStored),
       ...parseStoredCategories(legacyStoreStored),
     ];
@@ -508,12 +671,19 @@ export default function FilterSearchScreen() {
       }
       setActiveStoreId(storeId);
 
-      const [staffList, nextCategoryOptions] = await Promise.all([
+      const [{ data: currentMembership }, staffList, nextCategoryOptions] = await Promise.all([
+        supabase
+          .from('store_members')
+          .select('role')
+          .eq('store_id', storeId)
+          .eq('user_id', user.id)
+          .maybeSingle(),
         loadStoreStaffOptions(storeId, user.id),
         loadCategoryOptions(storeId),
       ]);
 
       if (isFocusedRef.current) {
+        setCurrentUserRole(currentMembership ? normalizeStoreMemberRole(currentMembership.role) : 'staff');
         setStaffOptions(staffList);
         setCategoryOptions(nextCategoryOptions);
       }
@@ -538,25 +708,35 @@ export default function FilterSearchScreen() {
     };
   }, [loadInitialData, resetSearchState]));
 
+  useEffect(() => {
+    return subscribeActiveStoreChanged(() => {
+      if (isFocusedRef.current) {
+        loadInitialData();
+      }
+    });
+  }, [loadInitialData]);
+
   const fetchPosts = async ({
     storeId,
     staff,
-    role,
+    roles,
     period,
+    manualRange,
     text,
-    category,
-    media,
-    reviewStatus,
+    categories,
+    mediaTypes,
+    reviewStatuses,
     sort,
   }: {
     storeId: string;
     staff: string;
-    role: RoleFilter;
+    roles: StoreMemberRole[];
     period: PeriodFilter;
+    manualRange: ManualPeriodRange;
     text: string;
-    category: string;
-    media: MediaFilter;
-    reviewStatus: ReviewStatusFilter;
+    categories: string[];
+    mediaTypes: SelectedMediaFilter[];
+    reviewStatuses: ReviewStatus[];
     sort: SortFilter;
   }) => {
     try {
@@ -566,12 +746,17 @@ export default function FilterSearchScreen() {
       setPreviewPost(null);
       setPreviewMediaIndex(0);
 
+      const effectiveStaff = canUseAdminFilters ? staff : 'all';
+      const effectiveRoles = canUseAdminFilters ? roles : [];
+      const effectiveMediaTypes = canUseAdminFilters ? mediaTypes : [];
+      const effectiveReviewStatuses = canUseAdminFilters ? reviewStatuses : [];
+
       let filteredUserIds: string[] | null = null;
-      if (staff !== 'all') {
-        filteredUserIds = [staff];
-      } else if (role !== 'all') {
+      if (effectiveStaff !== 'all') {
+        filteredUserIds = [effectiveStaff];
+      } else if (effectiveRoles.length > 0) {
         filteredUserIds = staffOptions
-          .filter(staffOption => staffOption.role === role)
+          .filter(staffOption => effectiveRoles.includes(staffOption.role))
           .map(staffOption => staffOption.user_id);
       }
 
@@ -581,8 +766,8 @@ export default function FilterSearchScreen() {
       }
 
       const order = SORT_OPTIONS.find(option => option.value === sort) ?? SORT_OPTIONS[0];
-      const basePostColumns = 'id, title, menu_name, media_url, is_video, likes_count, created_at, user_id';
-      const periodStart = getPeriodStart(period);
+      const basePostColumns = 'id, title, menu_name, media_url, is_video, created_at, user_id';
+      const periodRange = getPeriodRange(period, manualRange);
       const buildPostsQuery = (selectColumns: string) => {
         let postsQuery = supabase
           .from('posts')
@@ -591,16 +776,17 @@ export default function FilterSearchScreen() {
           .order(order.column, { ascending: order.ascending });
 
         if (filteredUserIds) postsQuery = postsQuery.in('user_id', filteredUserIds);
-        if (media !== 'all') postsQuery = postsQuery.eq('is_video', media === 'video');
-        if (reviewStatus !== 'all') postsQuery = postsQuery.eq('review_status', reviewStatus);
-        if (periodStart) postsQuery = postsQuery.gte('created_at', periodStart);
+        if (effectiveMediaTypes.length === 1) postsQuery = postsQuery.eq('is_video', effectiveMediaTypes[0] === 'video');
+        if (effectiveReviewStatuses.length > 0) postsQuery = postsQuery.in('review_status', effectiveReviewStatuses);
+        if (periodRange.startIso) postsQuery = postsQuery.gte('created_at', periodRange.startIso);
+        if (periodRange.endIso) postsQuery = postsQuery.lte('created_at', periodRange.endIso);
 
         return postsQuery;
       };
 
       let postsResult: { data: any[] | null; error: any } = await buildPostsQuery(`${basePostColumns}, review_status`);
       if (postsResult.error && isMissingReviewStatusError(postsResult.error)) {
-        if (reviewStatus !== 'all') {
+        if (effectiveReviewStatuses.length > 0) {
           Alert.alert(
             'ステータス検索を利用できません',
             '承認機能用のDB更新が必要です。Supabaseで database/post_review_status.sql を実行してください。'
@@ -682,8 +868,8 @@ export default function FilterSearchScreen() {
             || post.displayMenuName.toLowerCase().includes(normalizedText)
             || post.categories.some((postCategory: string) => postCategory.toLowerCase().includes(normalizedText));
 
-          const matchesCategory = categoryMatches(post.categories, category);
-          const matchesReviewStatus = reviewStatus === 'all' || post.review_status === reviewStatus;
+          const matchesCategory = categoryMatches(post.categories, categories);
+          const matchesReviewStatus = effectiveReviewStatuses.length === 0 || effectiveReviewStatuses.includes(post.review_status);
 
           return matchesText && matchesCategory && matchesReviewStatus;
         });
@@ -703,24 +889,26 @@ export default function FilterSearchScreen() {
 
   const applyFilters = (
     staff = selectedStaff,
-    role = selectedRole,
+    roles = selectedRoles,
     period = selectedPeriod,
+    manualRange = manualPeriodRange,
     text = searchText,
-    category = selectedCategory,
-    media = selectedMedia,
-    reviewStatus = selectedReviewStatus,
+    categories = selectedCategories,
+    mediaTypes = selectedMediaTypes,
+    reviewStatuses = selectedReviewStatuses,
     sort = selectedSort,
   ) => {
     if (!activeStoreId) return;
     fetchPosts({
       storeId: activeStoreId,
       staff,
-      role,
+      roles,
       period,
+      manualRange,
       text,
-      category,
-      media,
-      reviewStatus,
+      categories,
+      mediaTypes,
+      reviewStatuses,
       sort,
     });
   };
@@ -733,14 +921,85 @@ export default function FilterSearchScreen() {
     setPreviewMediaIndex(0);
   };
 
+  const openCategoryModal = () => {
+    setNewCategoryName('');
+    setCategoryModalVisible(true);
+  };
+
+  const closeCategoryModal = () => {
+    setNewCategoryName('');
+    setCategoryModalVisible(false);
+  };
+
+  const saveCustomCategory = async () => {
+    const normalizedCategory = normalizeCategory(newCategoryName);
+
+    if (!normalizedCategory) {
+      Alert.alert('エラー', 'カテゴリ名を入力してください。');
+      return;
+    }
+
+    if (normalizedCategory === 'all' || normalizedCategory === 'すべて' || isHiddenCategory(normalizedCategory)) {
+      Alert.alert('エラー', 'このカテゴリ名は使用できません。');
+      return;
+    }
+
+    const categoryExists = categoryOptions.some(
+      option => normalizeCategory(option.value) === normalizedCategory
+    );
+
+    if (categoryExists) {
+      Alert.alert('エラー', 'このカテゴリは既に存在します。');
+      return;
+    }
+
+    try {
+      if (!activeStoreId) {
+        Alert.alert('エラー', '店舗情報を取得できませんでした。');
+        return;
+      }
+
+      const [stored, legacyStored] = await Promise.all([
+        AsyncStorage.getItem(getStoreCustomCategoriesKey(activeStoreId)),
+        AsyncStorage.getItem(getLegacyStoreCustomCategoriesKey(activeStoreId)),
+      ]);
+      const savedCategories = [
+        ...parseStoredCategories(stored),
+        ...parseStoredCategories(legacyStored),
+      ];
+      const nextSavedCategories = [...savedCategories, normalizedCategory];
+
+      await AsyncStorage.setItem(getStoreCustomCategoriesKey(activeStoreId), JSON.stringify(nextSavedCategories));
+
+      setCategoryOptions(prev => buildCategoryOptions([
+        ...prev.map(option => option.value),
+        normalizedCategory,
+      ]));
+      setSelectedCategories(prev => (
+        prev.includes(normalizedCategory) ? prev : [...prev, normalizedCategory]
+      ));
+      clearCurrentResults();
+      closeCategoryModal();
+    } catch (error) {
+      console.error('Error saving filter category:', error);
+      Alert.alert('エラー', 'カテゴリの追加に失敗しました。');
+    }
+  };
+
   const resetFilters = () => {
     setSearchText('');
     setSelectedStaff('all');
-    setSelectedRole('all');
+    setSelectedRoles([]);
     setSelectedPeriod('all');
-    setSelectedCategory('all');
-    setSelectedMedia('all');
-    setSelectedReviewStatus('all');
+    setManualPeriodRange(createDefaultManualPeriodRange());
+    setTempManualPeriodRange(createDefaultManualPeriodRange());
+    setActiveManualDateField(null);
+    setManualPeriodModalVisible(false);
+    setCategoryModalVisible(false);
+    setNewCategoryName('');
+    setSelectedCategories([]);
+    setSelectedMediaTypes([]);
+    setSelectedReviewStatuses([]);
     setSelectedSort('newest');
     setPosts([]);
     setHasSearched(false);
@@ -762,27 +1021,79 @@ export default function FilterSearchScreen() {
   };
 
   const selectRole = (value: RoleFilter) => {
-    setSelectedRole(value);
+    setSelectedRoles(prev => (value === 'all' ? [] : toggleSelection(prev, value)));
     clearCurrentResults();
   };
 
+  const openManualPeriodModal = () => {
+    setTempManualPeriodRange(manualPeriodRange);
+    setActiveManualDateField(null);
+    setManualPeriodModalVisible(true);
+  };
+
   const selectPeriod = (value: PeriodFilter) => {
+    if (value === 'custom') {
+      openManualPeriodModal();
+      return;
+    }
+
     setSelectedPeriod(value);
     clearCurrentResults();
   };
 
+  const updateTempManualDate = (target: ManualDateField, date: Date) => {
+    setTempManualPeriodRange(prev => {
+      if (target === 'start') {
+        const startDate = startOfDay(date);
+        const endDate = prev.endDate.getTime() < startDate.getTime()
+          ? endOfDay(date)
+          : prev.endDate;
+        return { startDate, endDate };
+      }
+
+      const endDate = endOfDay(date);
+      const startDate = prev.startDate.getTime() > endDate.getTime()
+        ? startOfDay(date)
+        : prev.startDate;
+      return { startDate, endDate };
+    });
+  };
+
+  const handleManualDateChange = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS === 'android' && event.type === 'dismissed') {
+      setActiveManualDateField(null);
+      return;
+    }
+
+    if (activeManualDateField && date) {
+      updateTempManualDate(activeManualDateField, date);
+    }
+
+    if (Platform.OS === 'android') {
+      setActiveManualDateField(null);
+    }
+  };
+
+  const applyManualPeriod = () => {
+    setManualPeriodRange(tempManualPeriodRange);
+    setSelectedPeriod('custom');
+    setManualPeriodModalVisible(false);
+    setActiveManualDateField(null);
+    clearCurrentResults();
+  };
+
   const selectCategory = (value: string) => {
-    setSelectedCategory(value);
+    setSelectedCategories(prev => (value === 'all' ? [] : toggleSelection(prev, value)));
     clearCurrentResults();
   };
 
   const selectMedia = (value: MediaFilter) => {
-    setSelectedMedia(value);
+    setSelectedMediaTypes(prev => (value === 'all' ? [] : toggleSelection(prev, value)));
     clearCurrentResults();
   };
 
   const selectReviewStatus = (value: ReviewStatusFilter) => {
-    setSelectedReviewStatus(value);
+    setSelectedReviewStatuses(prev => (value === 'all' ? [] : toggleSelection(prev, value)));
     clearCurrentResults();
   };
 
@@ -853,23 +1164,7 @@ export default function FilterSearchScreen() {
       } as any);
 
       if (rpcResult.error) {
-        const message = `${rpcResult.error.message ?? ''}`;
-        const canFallbackToDirectUpdate = rpcResult.error.code === 'PGRST202'
-          || message.includes('set_post_review_status');
-
-        if (!canFallbackToDirectUpdate) {
-          throw rpcResult.error;
-        }
-
-        const { error } = await supabase
-          .from('posts')
-          .update({
-            review_status: status,
-            updated_at: new Date().toISOString(),
-          } as any)
-          .in('id', postIds);
-
-        if (error) throw error;
+        throw rpcResult.error;
       }
 
       setPosts(prev => prev.map(post => (
@@ -887,14 +1182,7 @@ export default function FilterSearchScreen() {
       const statusLabel = getReviewStatusOption(status).label;
       Alert.alert('完了', `${postIds.length}件を「${statusLabel}」に変更しました。`);
     } catch (e: any) {
-      const rawMessage = `${e?.message ?? ''}`;
-      const friendlyMessage = isMissingReviewStatusError(e)
-        ? '承認機能用のDB更新が必要です。Supabaseで database/post_review_status.sql を実行してください。'
-        : rawMessage.includes('row-level security') || rawMessage.includes('permission')
-          ? '管理者権限、または承認機能用SQLの適用状況を確認してください。'
-          : rawMessage || 'もう一度お試しください。';
-
-      Alert.alert('エラー', `ステータス変更に失敗しました。\n${friendlyMessage}`);
+      Alert.alert('エラー', `ステータス変更に失敗しました。\n${getReviewStatusUpdateErrorMessage(e)}`);
     } finally {
       setStatusUpdating(false);
     }
@@ -942,7 +1230,8 @@ export default function FilterSearchScreen() {
             if (!item.mediaUrl.startsWith('file://')) {
               const ext = item.isVideo ? 'mp4' : 'jpg';
               const fileUri = `${FileSystem.cacheDirectory}filter_${post.id}_${Date.now()}_${index}.${ext}`;
-              const result = await FileSystem.downloadAsync(item.mediaUrl, fileUri);
+              const downloadUrl = await getSignedPostMediaUrl(item.mediaUrl);
+              const result = await FileSystem.downloadAsync(downloadUrl, fileUri);
               if (!result?.uri) continue;
               saveUri = result.uri;
             }
@@ -991,22 +1280,60 @@ export default function FilterSearchScreen() {
 
   const compactFilters = useMemo(() => {
     const chips: string[] = [];
-    if (selectedStaff !== 'all') {
+    if (canUseAdminFilters && selectedStaff !== 'all') {
       chips.push(staffOptions.find(staff => staff.user_id === selectedStaff)?.display_name ?? 'スタッフ指定');
     }
-    if (selectedRole !== 'all') {
-      chips.push(ROLE_OPTIONS.find(role => role.value === selectedRole)?.label ?? '');
+    if (canUseAdminFilters) {
+      chips.push(...ROLE_OPTIONS
+        .filter(option => option.value !== 'all' && selectedRoles.includes(option.value))
+        .map(option => option.label));
     }
     if (selectedPeriod !== 'all') {
-      chips.push(PERIOD_OPTIONS.find(period => period.value === selectedPeriod)?.label ?? '');
+      chips.push(selectedPeriod === 'custom'
+        ? `手動: ${formatDate(manualPeriodRange.startDate)}〜${formatDate(manualPeriodRange.endDate)}`
+        : PERIOD_OPTIONS.find(option => option.value === selectedPeriod)?.label ?? '');
     }
-    if (selectedCategory !== 'all') chips.push(selectedCategory);
-    if (selectedMedia !== 'all') chips.push(MEDIA_OPTIONS.find(media => media.value === selectedMedia)?.label ?? '');
-    if (selectedReviewStatus !== 'all') {
-      chips.push(REVIEW_STATUS_FILTER_OPTIONS.find(status => status.value === selectedReviewStatus)?.label ?? '');
+    chips.push(...selectedCategories);
+    if (canUseAdminFilters) {
+      chips.push(...MEDIA_OPTIONS
+        .filter(option => option.value !== 'all' && selectedMediaTypes.includes(option.value))
+        .map(option => option.label));
+      chips.push(...REVIEW_STATUS_FILTER_OPTIONS
+        .filter(option => option.value !== 'all' && selectedReviewStatuses.includes(option.value))
+        .map(option => option.label));
     }
     return chips.filter(Boolean);
-  }, [selectedCategory, selectedMedia, selectedPeriod, selectedReviewStatus, selectedRole, selectedStaff, staffOptions]);
+  }, [
+    canUseAdminFilters,
+    selectedCategories,
+    manualPeriodRange,
+    selectedMediaTypes,
+    selectedPeriod,
+    selectedReviewStatuses,
+    selectedRoles,
+    selectedStaff,
+    staffOptions,
+  ]);
+
+  const isRoleActive = (value: RoleFilter) => (
+    value === 'all' ? selectedRoles.length === 0 : selectedRoles.includes(value)
+  );
+
+  const isPeriodActive = (value: PeriodFilter) => (
+    value === selectedPeriod
+  );
+
+  const isCategoryActive = (value: string) => (
+    value === 'all' ? selectedCategories.length === 0 : selectedCategories.includes(value)
+  );
+
+  const isMediaActive = (value: MediaFilter) => (
+    value === 'all' ? selectedMediaTypes.length === 0 : selectedMediaTypes.includes(value)
+  );
+
+  const isReviewStatusActive = (value: ReviewStatusFilter) => (
+    value === 'all' ? selectedReviewStatuses.length === 0 : selectedReviewStatuses.includes(value)
+  );
 
   const renderSectionHeader = (title: string, onAllPress?: () => void) => (
     <View style={styles.sectionHeader}>
@@ -1089,7 +1416,13 @@ export default function FilterSearchScreen() {
       ]}
     >
       {staff?.avatar_url ? (
-        <Image source={{ uri: staff.avatar_url }} style={styles.staffAvatar} contentFit="cover" />
+        <Image
+          source={{ uri: resolveAvatarStorageUrl(staff.avatar_url) }}
+          style={styles.staffAvatar}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          recyclingKey={`staff-avatar-${staff.user_id}`}
+        />
       ) : (
         <Ionicons name={staff ? 'person' : 'people'} size={22} color={active ? ACCENT : colors.textMuted} />
       )}
@@ -1164,38 +1497,42 @@ export default function FilterSearchScreen() {
         )}
       </View>
 
-      {renderSectionHeader('スタッフ', () => selectStaff('all'))}
-      <TouchableOpacity
-        style={[styles.staffSelectButton, { borderColor: colors.borderLight, backgroundColor: colors.surface }]}
-        onPress={() => setStaffModalVisible(true)}
-        activeOpacity={0.78}
-        accessibilityRole="button"
-      >
-        <View style={styles.staffSelectLeft}>
-          <StaffAvatar staff={selectedStaffOption} active={selectedStaff !== 'all'} />
-          <View style={styles.staffSelectTextGroup}>
-            <Text style={[styles.staffSelectTitle, { color: colors.text }]} numberOfLines={1}>
-              {selectedStaffLabel}
-            </Text>
-            <Text style={[styles.staffSelectMeta, { color: colors.textMuted }]} numberOfLines={1}>
-              {selectedStaffMeta}
-            </Text>
-          </View>
-        </View>
-        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-      </TouchableOpacity>
+      {canUseAdminFilters && (
+        <>
+          {renderSectionHeader('スタッフ', () => selectStaff('all'))}
+          <TouchableOpacity
+            style={[styles.staffSelectButton, { borderColor: colors.borderLight, backgroundColor: colors.surface }]}
+            onPress={() => setStaffModalVisible(true)}
+            activeOpacity={0.78}
+            accessibilityRole="button"
+          >
+            <View style={styles.staffSelectLeft}>
+              <StaffAvatar staff={selectedStaffOption} active={selectedStaff !== 'all'} />
+              <View style={styles.staffSelectTextGroup}>
+                <Text style={[styles.staffSelectTitle, { color: colors.text }]} numberOfLines={1}>
+                  {selectedStaffLabel}
+                </Text>
+                <Text style={[styles.staffSelectMeta, { color: colors.textMuted }]} numberOfLines={1}>
+                  {selectedStaffMeta}
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
 
-      {renderSectionHeader('権限', () => selectRole('all'))}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-        {ROLE_OPTIONS.map(role => (
-          <FilterChip
-            key={role.value}
-            label={role.label}
-            active={selectedRole === role.value}
-            onPress={() => selectRole(role.value)}
-          />
-        ))}
-      </ScrollView>
+          {renderSectionHeader('役割', () => selectRole('all'))}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {ROLE_OPTIONS.map(role => (
+              <FilterChip
+                key={role.value}
+                label={role.label}
+                active={isRoleActive(role.value)}
+                onPress={() => selectRole(role.value)}
+              />
+            ))}
+          </ScrollView>
+        </>
+      )}
 
       {renderSectionHeader('期間', () => selectPeriod('all'))}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -1203,14 +1540,14 @@ export default function FilterSearchScreen() {
           <FilterChip
             key={period.value}
             label={period.label}
-            active={selectedPeriod === period.value}
+            active={isPeriodActive(period.value)}
             onPress={() => selectPeriod(period.value)}
           />
         ))}
       </ScrollView>
       <View style={[styles.periodPreview, { borderColor: colors.borderLight, backgroundColor: colors.surface }]}>
         <Ionicons name="calendar-outline" size={18} color={colors.textMuted} />
-        <Text style={[styles.periodPreviewText, { color: colors.text }]}>{getPeriodLabel(selectedPeriod)}</Text>
+        <Text style={[styles.periodPreviewText, { color: colors.text }]}>{getPeriodLabel(selectedPeriod, manualPeriodRange)}</Text>
       </View>
 
       {renderSectionHeader('カテゴリ', () => selectCategory('all'))}
@@ -1220,54 +1557,79 @@ export default function FilterSearchScreen() {
             key={category.value}
             label={category.label}
             icon={category.icon}
-            active={selectedCategory === category.value}
+            active={isCategoryActive(category.value)}
             onPress={() => selectCategory(category.value)}
           />
         ))}
+        <TouchableOpacity
+          style={[
+            styles.iconChip,
+            styles.addCategoryChip,
+            {
+              backgroundColor: colors.surface,
+              borderColor: ACCENT,
+            },
+          ]}
+          onPress={openCategoryModal}
+          activeOpacity={0.78}
+          accessibilityRole="button"
+          accessibilityLabel="カテゴリを追加"
+        >
+          <View style={[styles.iconChipIcon, styles.addCategoryIcon]}>
+            <Ionicons name="add" size={22} color={ACCENT} />
+          </View>
+          <Text style={[styles.iconChipText, styles.addCategoryText]} numberOfLines={1}>
+            追加
+          </Text>
+        </TouchableOpacity>
       </ScrollView>
 
-      {renderSectionHeader('メディア種別', () => selectMedia('all'))}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-        {MEDIA_OPTIONS.map(media => (
-          <FilterChip
-            key={media.value}
-            label={media.label}
-            active={selectedMedia === media.value}
-            onPress={() => selectMedia(media.value)}
-          />
-        ))}
-      </ScrollView>
+      {canUseAdminFilters && (
+        <>
+          {renderSectionHeader('メディア種別', () => selectMedia('all'))}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {MEDIA_OPTIONS.map(media => (
+              <FilterChip
+                key={media.value}
+                label={media.label}
+                active={isMediaActive(media.value)}
+                onPress={() => selectMedia(media.value)}
+              />
+            ))}
+          </ScrollView>
 
-      {renderSectionHeader('承認ステータス', () => selectReviewStatus('all'))}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
-        {REVIEW_STATUS_FILTER_OPTIONS.map(status => (
-          <IconChip
-            key={status.value}
-            label={status.label}
-            icon={status.icon}
-            active={selectedReviewStatus === status.value}
-            onPress={() => selectReviewStatus(status.value)}
-          />
-        ))}
-      </ScrollView>
+          {renderSectionHeader('承認ステータス', () => selectReviewStatus('all'))}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
+            {REVIEW_STATUS_FILTER_OPTIONS.map(status => (
+              <IconChip
+                key={status.value}
+                label={status.label}
+                icon={status.icon}
+                active={isReviewStatusActive(status.value)}
+                onPress={() => selectReviewStatus(status.value)}
+              />
+            ))}
+          </ScrollView>
 
-      <Text style={[styles.sectionTitle, styles.sortLabel, { color: colors.text }]}>並び順</Text>
-      <TouchableOpacity
-        style={[styles.sortSelect, { borderColor: colors.borderLight, backgroundColor: colors.surface }]}
-        onPress={() => setSortModalVisible(true)}
-        activeOpacity={0.78}
-      >
-        <View style={styles.sortSelectLeft}>
-          <Ionicons name={sortOption.icon} size={19} color={ACCENT} />
-          <Text style={[styles.sortSelectText, { color: colors.text }]}>{sortOption.label}</Text>
-        </View>
-        <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
-      </TouchableOpacity>
+          <Text style={[styles.sectionTitle, styles.sortLabel, { color: colors.text }]}>並び順</Text>
+          <TouchableOpacity
+            style={[styles.sortSelect, { borderColor: colors.borderLight, backgroundColor: colors.surface }]}
+            onPress={() => setSortModalVisible(true)}
+            activeOpacity={0.78}
+          >
+            <View style={styles.sortSelectLeft}>
+              <Ionicons name={sortOption.icon} size={19} color={ACCENT} />
+              <Text style={[styles.sortSelectText, { color: colors.text }]}>{sortOption.label}</Text>
+            </View>
+            <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </>
+      )}
 
       {compactFilters.length > 0 && (
         <View style={styles.activeFilterRow}>
-          {compactFilters.map(filter => (
-            <View key={filter} style={styles.activeFilterPill}>
+          {compactFilters.map((filter, index) => (
+            <View key={`${filter}-${index}`} style={styles.activeFilterPill}>
               <Text style={styles.activeFilterText}>{filter}</Text>
             </View>
           ))}
@@ -1291,7 +1653,7 @@ export default function FilterSearchScreen() {
         accessibilityRole="button"
         disabled={loading}
       >
-        <LinearGradient colors={['#356BFF', '#4937F0']} style={styles.searchButtonGradient}>
+        <LinearGradient colors={['#2196F3', '#1976D2']} style={styles.searchButtonGradient}>
           <Text style={styles.searchButtonText}>{renderSearchButtonLabel()}</Text>
         </LinearGradient>
       </TouchableOpacity>
@@ -1335,7 +1697,7 @@ export default function FilterSearchScreen() {
           disabled={statusUpdating || downloading}
         >
           <Ionicons name="download-outline" size={18} color="#fff" />
-          <Text style={styles.selectionActionButtonText}>{downloading ? '保存中' : 'DL'}</Text>
+          <Text style={styles.selectionActionButtonText}>{downloading ? '保存中' : '保存'}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1344,7 +1706,7 @@ export default function FilterSearchScreen() {
   const renderStaffOptionRow = (staff?: StaffOption) => {
     const isAll = !staff;
     const active = isAll ? selectedStaff === 'all' : selectedStaff === staff.user_id;
-    const roleLabel = isAll ? `${staffOptions.length}名` : (staff.role === 'owner' ? 'オーナー' : 'スタッフ');
+    const roleLabel = isAll ? `${staffOptions.length}名` : getStoreRoleLabel(staff.role);
 
     return (
       <TouchableOpacity
@@ -1447,6 +1809,167 @@ export default function FilterSearchScreen() {
     </Modal>
   );
 
+  const renderManualPeriodModal = () => {
+    const activePickerValue = activeManualDateField === 'start'
+      ? tempManualPeriodRange.startDate
+      : tempManualPeriodRange.endDate;
+    const pickerDisplay = Platform.OS === 'ios' ? 'inline' : 'calendar';
+
+    const renderDateField = (target: ManualDateField, label: string, date: Date) => {
+      const active = activeManualDateField === target;
+
+      return (
+        <TouchableOpacity
+          style={[
+            styles.manualDateField,
+            {
+              borderColor: active ? ACCENT : colors.borderLight,
+              backgroundColor: active ? ACCENT_SOFT : colors.surface,
+            },
+          ]}
+          onPress={() => setActiveManualDateField(target)}
+          activeOpacity={0.78}
+          accessibilityRole="button"
+          accessibilityState={{ selected: active }}
+        >
+          <View>
+            <Text style={[styles.manualDateLabel, { color: colors.textMuted }]}>{label}</Text>
+            <Text style={[styles.manualDateValue, { color: colors.text }]}>{formatDate(date)}</Text>
+          </View>
+          <Ionicons name="calendar-outline" size={20} color={active ? ACCENT : colors.textMuted} />
+        </TouchableOpacity>
+      );
+    };
+
+    return (
+      <Modal
+        visible={manualPeriodModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setManualPeriodModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setManualPeriodModalVisible(false)}
+            accessibilityRole="button"
+            accessibilityLabel="手動期間選択を閉じる"
+          />
+          <View style={[styles.manualPeriodModal, { backgroundColor: colors.surface }]}>
+            <View style={styles.modalHandle} />
+            <View style={styles.staffModalHeader}>
+              <Text style={[styles.staffModalTitle, { color: colors.text }]}>期間を選択</Text>
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setManualPeriodModalVisible(false)}>
+                <Ionicons name="close" size={20} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.manualDateRow}>
+              {renderDateField('start', '開始日', tempManualPeriodRange.startDate)}
+              {renderDateField('end', '終了日', tempManualPeriodRange.endDate)}
+            </View>
+
+            {activeManualDateField ? (
+              <View style={[styles.manualPickerWrap, { borderColor: colors.borderLight, backgroundColor: colors.surface2 }]}>
+                <DateTimePicker
+                  value={activePickerValue}
+                  mode="date"
+                  display={pickerDisplay}
+                  maximumDate={endOfDay(new Date())}
+                  onChange={handleManualDateChange}
+                  locale="ja-JP"
+                />
+              </View>
+            ) : null}
+
+            <View style={styles.manualPeriodActions}>
+              <TouchableOpacity
+                style={[styles.manualPeriodSecondaryButton, { borderColor: colors.borderLight }]}
+                onPress={() => setManualPeriodModalVisible(false)}
+                activeOpacity={0.78}
+              >
+                <Text style={[styles.manualPeriodSecondaryText, { color: colors.textSecondary }]}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.manualPeriodPrimaryButton}
+                onPress={applyManualPeriod}
+                activeOpacity={0.84}
+              >
+                <Text style={styles.manualPeriodPrimaryText}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  const renderCategoryModal = () => (
+    <Modal
+      visible={categoryModalVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={closeCategoryModal}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={closeCategoryModal}
+          accessibilityRole="button"
+          accessibilityLabel="カテゴリ追加を閉じる"
+        />
+        <View style={[styles.manualPeriodModal, { backgroundColor: colors.surface }]}>
+          <View style={styles.modalHandle} />
+          <View style={styles.staffModalHeader}>
+            <Text style={[styles.staffModalTitle, { color: colors.text }]}>カテゴリを追加</Text>
+            <TouchableOpacity style={styles.modalCloseButton} onPress={closeCategoryModal}>
+              <Ionicons name="close" size={20} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={[styles.categoryModalInputWrap, { backgroundColor: isDark ? colors.surface2 : '#F3F4F7' }]}>
+            <Ionicons name="pricetag-outline" size={19} color={colors.textMuted} />
+            <TextInput
+              style={[styles.categoryModalInput, { color: colors.text }]}
+              value={newCategoryName}
+              onChangeText={setNewCategoryName}
+              placeholder="カテゴリ名を入力"
+              placeholderTextColor={colors.textMuted}
+              returnKeyType="done"
+              autoFocus
+              onSubmitEditing={saveCustomCategory}
+            />
+            {newCategoryName.length > 0 && (
+              <TouchableOpacity onPress={() => setNewCategoryName('')} hitSlop={8}>
+                <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={styles.manualPeriodActions}>
+            <TouchableOpacity
+              style={[styles.manualPeriodSecondaryButton, { borderColor: colors.borderLight }]}
+              onPress={closeCategoryModal}
+              activeOpacity={0.78}
+            >
+              <Text style={[styles.manualPeriodSecondaryText, { color: colors.textSecondary }]}>キャンセル</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.manualPeriodPrimaryButton}
+              onPress={saveCustomCategory}
+              activeOpacity={0.84}
+            >
+              <Text style={styles.manualPeriodPrimaryText}>追加</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+
   const renderPreviewModal = () => {
     if (!previewPost) return null;
 
@@ -1467,16 +1990,14 @@ export default function FilterSearchScreen() {
         animationType="fade"
         onRequestClose={() => setPreviewPost(null)}
       >
-        <TouchableOpacity
-          style={styles.previewOverlay}
-          activeOpacity={1}
-          onPress={() => setPreviewPost(null)}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            style={[styles.previewModal, { backgroundColor: colors.surface }]}
-            onPress={(event) => event.stopPropagation()}
-          >
+        <View style={styles.previewOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setPreviewPost(null)}
+            accessibilityRole="button"
+            accessibilityLabel="投稿プレビューを閉じる"
+          />
+          <View style={[styles.previewModal, { backgroundColor: colors.surface }]}>
             <View style={styles.previewHeader}>
               <View style={styles.previewHeaderText}>
                 <Text style={[styles.previewTitle, { color: colors.text }]} numberOfLines={1}>
@@ -1491,18 +2012,30 @@ export default function FilterSearchScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.previewScroll}>
+            <ScrollView
+              style={styles.previewScrollView}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.previewScroll}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
+            >
               <View style={[styles.previewMediaWrap, { backgroundColor: colors.surface2 }]}>
                 {activeMedia?.mediaUrl ? (
                   activeMedia.isVideo ? (
                     <Video
-                      source={{ uri: activeMedia.mediaUrl }}
+                      source={{ uri: resolvePostStorageUrl(activeMedia.mediaUrl) }}
                       style={styles.previewMedia}
                       resizeMode={ResizeMode.CONTAIN}
                       useNativeControls
                     />
                   ) : (
-                    <Image source={{ uri: activeMedia.mediaUrl }} style={styles.previewMedia} contentFit="contain" />
+                    <Image
+                      source={{ uri: resolvePostStorageUrl(activeMedia.mediaUrl) }}
+                      style={styles.previewMedia}
+                      contentFit="contain"
+                      cachePolicy="memory-disk"
+                      recyclingKey={`filter-preview-${activeMedia.id}`}
+                    />
                   )
                 ) : (
                   <View style={styles.previewMediaFallback}>
@@ -1519,6 +2052,16 @@ export default function FilterSearchScreen() {
                 >
                   {mediaItems.map((mediaItem, index) => {
                     const active = safeMediaIndex === index;
+                    const thumbnailKey = getMediaThumbnailKey(previewPost.id, mediaItem);
+                    const thumbnailFailed = mediaItem.isVideo
+                      ? failedVideoThumbnailKeys.has(thumbnailKey)
+                      : thumbnailErrors.has(thumbnailKey);
+                    const thumbnailUrl = getMediaThumbnailUrl(mediaItem.mediaUrl);
+                    const repairedThumbnailUrl = repairedVideoThumbnailUrls[thumbnailKey] ?? thumbnailUrl;
+                    const hasThumbnail = hasDedicatedThumbnail(mediaItem.mediaUrl);
+                    const resolvedThumbnailUrl = mediaItem.isVideo
+                      ? resolveVideoThumbnailStorageUrl(repairedThumbnailUrl)
+                      : resolvePostStorageUrl(thumbnailUrl);
                     return (
                       <TouchableOpacity
                         key={`${mediaItem.id}-${index}`}
@@ -1532,12 +2075,29 @@ export default function FilterSearchScreen() {
                         onPress={() => setPreviewMediaIndex(index)}
                         activeOpacity={0.78}
                       >
-                        {mediaItem.isVideo ? (
+                        {thumbnailFailed || (mediaItem.isVideo && !hasThumbnail) || !resolvedThumbnailUrl ? (
                           <View style={styles.previewThumbVideo}>
-                            <Ionicons name="play" size={18} color={active ? ACCENT : colors.textMuted} />
+                            <Ionicons
+                              name={mediaItem.isVideo ? 'play' : 'image-outline'}
+                              size={18}
+                              color={active ? ACCENT : colors.textMuted}
+                            />
                           </View>
                         ) : (
-                          <Image source={{ uri: mediaItem.mediaUrl }} style={styles.previewThumbImage} contentFit="cover" />
+                          <Image
+                            source={{ uri: resolvedThumbnailUrl }}
+                            style={styles.previewThumbImage}
+                            contentFit="cover"
+                            cachePolicy="memory-disk"
+                            recyclingKey={`filter-preview-thumb-${thumbnailKey}`}
+                            onError={() => {
+                              if (mediaItem.isVideo && hasThumbnail) {
+                                repairVideoThumbnail(thumbnailKey, mediaItem.mediaUrl, { force: true });
+                              } else if (!thumbnailFailed && hasThumbnail) {
+                                setThumbnailErrors(prev => new Set(prev).add(thumbnailKey));
+                              }
+                            }}
+                          />
                         )}
                       </TouchableOpacity>
                     );
@@ -1548,12 +2108,6 @@ export default function FilterSearchScreen() {
               <View style={styles.previewMetaBlock}>
                 <View style={styles.previewStatusRow}>
                   <ReviewStatusBadge status={previewPost.review_status} />
-                  <View style={styles.previewLikeWrap}>
-                    <Ionicons name="heart-outline" size={15} color={colors.textMuted} />
-                    <Text style={[styles.previewLikeText, { color: colors.textMuted }]}>
-                      {previewPost.likes_count ?? 0}
-                    </Text>
-                  </View>
                 </View>
 
                 <Text style={[styles.previewPostTitle, { color: colors.text }]} numberOfLines={2}>
@@ -1572,57 +2126,71 @@ export default function FilterSearchScreen() {
                 </View>
               </View>
 
-              <View style={styles.previewStatusSection}>
-                <Text style={[styles.previewSectionTitle, { color: colors.text }]}>ステータス変更</Text>
-                <View style={styles.previewStatusActions}>
-                  {REVIEW_STATUS_OPTIONS.map(option => {
-                    const active = previewPost.review_status === option.value;
-                    return (
-                      <TouchableOpacity
-                        key={option.value}
-                        style={[
-                          styles.previewStatusButton,
-                          {
-                            backgroundColor: active ? option.backgroundColor : colors.surface,
-                            borderColor: active ? option.borderColor : colors.borderLight,
-                          },
-                        ]}
-                        onPress={() => updateReviewStatus([previewPost.id], option.value)}
-                        activeOpacity={0.78}
-                        disabled={statusUpdating || active}
-                      >
-                        <Ionicons name={option.icon} size={17} color={option.textColor} />
-                        <Text style={[styles.previewStatusButtonText, { color: option.textColor }]}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+              {canUseAdminFilters && (
+                <View style={styles.previewStatusSection}>
+                  <Text style={[styles.previewSectionTitle, { color: colors.text }]}>ステータス変更</Text>
+                  <View style={styles.previewStatusActions}>
+                    {REVIEW_STATUS_OPTIONS.map(option => {
+                      const active = previewPost.review_status === option.value;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[
+                            styles.previewStatusButton,
+                            {
+                              backgroundColor: active ? option.backgroundColor : colors.surface,
+                              borderColor: active ? option.borderColor : colors.borderLight,
+                            },
+                          ]}
+                          onPress={() => updateReviewStatus([previewPost.id], option.value)}
+                          activeOpacity={0.78}
+                          disabled={statusUpdating || active}
+                        >
+                          <Ionicons name={option.icon} size={17} color={option.textColor} />
+                          <Text style={[styles.previewStatusButtonText, { color: option.textColor }]}>
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
-              </View>
+              )}
             </ScrollView>
 
-            <View style={[styles.previewFooter, { borderTopColor: colors.borderLight }]}>
-              <TouchableOpacity
-                style={[styles.previewFooterButton, downloading && styles.searchButtonDisabled]}
-                onPress={() => handleDownloadPosts([previewPost], false)}
-                activeOpacity={0.84}
-                disabled={downloading}
-              >
-                <Ionicons name="download-outline" size={18} color="#fff" />
-                <Text style={styles.previewFooterButtonText}>{downloading ? '保存中...' : 'この投稿を保存'}</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
+            {canUseAdminFilters && (
+              <View style={[styles.previewFooter, { borderTopColor: colors.borderLight }]}>
+                <TouchableOpacity
+                  style={[styles.previewFooterButton, downloading && styles.searchButtonDisabled]}
+                  onPress={() => handleDownloadPosts([previewPost], false)}
+                  activeOpacity={0.84}
+                  disabled={downloading}
+                >
+                  <Ionicons name="download-outline" size={18} color="#fff" />
+                  <Text style={styles.previewFooterButtonText}>{downloading ? '保存中...' : 'この投稿を保存'}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
       </Modal>
     );
   };
 
   const renderResultCard = ({ item }: { item: PostItem; index: number }) => {
     const media = item.mediaItems[0];
+    const thumbnailKey = media ? getMediaThumbnailKey(item.id, media) : '';
+    const thumbnailFailed = media?.isVideo
+      ? failedVideoThumbnailKeys.has(thumbnailKey)
+      : thumbnailErrors.has(thumbnailKey);
+    const thumbnailUrl = media ? getMediaThumbnailUrl(media.mediaUrl) : '';
+    const repairedThumbnailUrl = media ? repairedVideoThumbnailUrls[thumbnailKey] ?? thumbnailUrl : '';
+    const hasThumbnail = media ? hasDedicatedThumbnail(media.mediaUrl) : false;
+    const resolvedThumbnailUrl = media?.isVideo
+      ? resolveVideoThumbnailStorageUrl(repairedThumbnailUrl)
+      : resolvePostStorageUrl(thumbnailUrl);
     const createdDate = new Date(item.created_at);
-    const selected = selectedPostIds.has(item.id);
+    const selected = canUseAdminFilters && selectedPostIds.has(item.id);
     const categoryLabels = item.categories.length > 0
       ? item.categories
       : [item.is_video ? '動画' : '写真'];
@@ -1638,35 +2206,69 @@ export default function FilterSearchScreen() {
         ]}
         activeOpacity={0.82}
         onPress={() => handleResultPress(item)}
-        onLongPress={() => togglePostSelection(item.id)}
+        onLongPress={canUseAdminFilters ? () => togglePostSelection(item.id) : undefined}
       >
         <View style={[styles.thumbnailWrap, { backgroundColor: colors.surface2 }]}>
           {media?.mediaUrl ? (
-            <Image source={{ uri: media.mediaUrl }} style={styles.thumbnail} contentFit="cover" />
+            media.isVideo ? (
+              !thumbnailFailed && hasDedicatedThumbnail(media.mediaUrl) && resolvedThumbnailUrl ? (
+                <Image
+                  source={{ uri: resolvedThumbnailUrl }}
+                  style={styles.thumbnail}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={`filter-result-${thumbnailKey}`}
+                  onError={() => repairVideoThumbnail(thumbnailKey, media.mediaUrl, { force: true })}
+                />
+              ) : (
+                <View style={styles.thumbnailFallback}>
+                  <Ionicons name="videocam-outline" size={30} color={colors.textMuted} />
+                </View>
+              )
+            ) : thumbnailFailed ? (
+              <View style={styles.thumbnailFallback}>
+                <Ionicons name="image-outline" size={28} color={colors.textMuted} />
+              </View>
+            ) : (
+              <Image
+                source={{ uri: resolvedThumbnailUrl }}
+                style={styles.thumbnail}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                recyclingKey={`filter-result-${thumbnailKey}`}
+                onError={() => {
+                  if (!thumbnailFailed && hasThumbnail) {
+                    setThumbnailErrors(prev => new Set(prev).add(thumbnailKey));
+                  }
+                }}
+              />
+            )
           ) : (
             <View style={styles.thumbnailFallback}>
               <Ionicons name="image-outline" size={28} color={colors.textMuted} />
             </View>
           )}
-          <TouchableOpacity
-            style={[
-              styles.cardSelectButton,
-              selected && styles.cardSelectButtonActive,
-            ]}
-            onPress={(event) => {
-              event.stopPropagation();
-              togglePostSelection(item.id);
-            }}
-            activeOpacity={0.82}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: selected }}
-          >
-            {selected ? (
-              <Ionicons name="checkmark" size={15} color="#fff" />
-            ) : (
-              <Ionicons name="ellipse-outline" size={17} color="#fff" />
-            )}
-          </TouchableOpacity>
+          {canUseAdminFilters && (
+            <TouchableOpacity
+              style={[
+                styles.cardSelectButton,
+                selected && styles.cardSelectButtonActive,
+              ]}
+              onPress={(event) => {
+                event.stopPropagation();
+                togglePostSelection(item.id);
+              }}
+              activeOpacity={0.82}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: selected }}
+            >
+              {selected ? (
+                <Ionicons name="checkmark" size={15} color="#fff" />
+              ) : (
+                <Ionicons name="ellipse-outline" size={17} color="#fff" />
+              )}
+            </TouchableOpacity>
+          )}
           {media?.isVideo && (
             <View style={styles.videoBadge}>
               <Ionicons name="play" size={12} color="#fff" />
@@ -1697,10 +2299,6 @@ export default function FilterSearchScreen() {
             {getRelativeTime(createdDate)}
           </Text>
         </View>
-        <View style={styles.likeRow}>
-          <Ionicons name="heart-outline" size={13} color={colors.textMuted} />
-          <Text style={[styles.likeText, { color: colors.textMuted }]}>{item.likes_count ?? 0}</Text>
-        </View>
       </TouchableOpacity>
     );
   };
@@ -1714,7 +2312,7 @@ export default function FilterSearchScreen() {
             {posts.length}件の投稿が見つかりました
           </Text>
           <View style={styles.resultHeaderActions}>
-            {posts.length > 0 && (
+            {canUseAdminFilters && posts.length > 0 && (
               <TouchableOpacity onPress={toggleAllVisiblePosts} activeOpacity={0.75} style={styles.resultSelectButton}>
                 <Ionicons
                   name={posts.every(post => selectedPostIds.has(post.id)) ? 'checkmark-done-outline' : 'checkmark-circle-outline'}
@@ -1726,10 +2324,12 @@ export default function FilterSearchScreen() {
                 </Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity onPress={() => setSortModalVisible(true)} activeOpacity={0.75} style={styles.resultSortButton}>
-              <Text style={styles.resultSortText}>{sortOption.label.replace('（投稿日）', '').replace('（いいね）', '')}</Text>
-              <Ionicons name="chevron-down" size={16} color={ACCENT} />
-            </TouchableOpacity>
+            {canUseAdminFilters && (
+              <TouchableOpacity onPress={() => setSortModalVisible(true)} activeOpacity={0.75} style={styles.resultSortButton}>
+                <Text style={styles.resultSortText}>{sortOption.label.replace('（投稿日）', '')}</Text>
+                <Ionicons name="chevron-down" size={16} color={ACCENT} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       )}
@@ -1760,7 +2360,7 @@ export default function FilterSearchScreen() {
           renderItem={renderResultCard}
           keyExtractor={item => item.id}
           numColumns={2}
-          extraData={selectedPostIds}
+          extraData={[selectedPostIds, currentUserRole]}
           columnWrapperStyle={posts.length > 0 ? styles.resultGridRow : undefined}
           contentContainerStyle={posts.length === 0 ? styles.emptyList : styles.list}
           showsVerticalScrollIndicator={false}
@@ -1789,6 +2389,8 @@ export default function FilterSearchScreen() {
       )}
 
       {renderStaffModal()}
+      {renderManualPeriodModal()}
+      {renderCategoryModal()}
       {renderPreviewModal()}
 
       <Modal
@@ -2022,6 +2624,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
   },
+  addCategoryChip: {
+    borderStyle: 'dashed',
+  },
+  addCategoryIcon: {
+    backgroundColor: ACCENT_SOFT,
+  },
+  addCategoryText: {
+    color: ACCENT,
+  },
   sortLabel: {
     marginBottom: 10,
   },
@@ -2151,10 +2762,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   selectionApproveButton: {
-    backgroundColor: '#24A05A',
+    backgroundColor: ACCENT,
   },
   selectionRejectButton: {
-    backgroundColor: '#5D6678',
+    backgroundColor: ACCENT,
   },
   selectionDownloadButton: {
     flex: 0.74,
@@ -2211,11 +2822,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   resultGridRow: {
-    gap: 12,
+    justifyContent: 'space-between',
     marginBottom: 12,
   },
   resultCard: {
-    flex: 1,
+    width: '48%',
     borderRadius: 14,
     borderWidth: 1,
     padding: 8,
@@ -2335,16 +2946,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flexShrink: 1,
   },
-  likeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    marginTop: 5,
-  },
-  likeText: {
-    fontSize: 10,
-    fontWeight: '800',
-  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -2401,6 +3002,15 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     elevation: 10,
   },
+  manualPeriodModal: {
+    borderRadius: 18,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.16,
+    shadowRadius: 24,
+    elevation: 10,
+  },
   modalHandle: {
     alignSelf: 'center',
     width: 36,
@@ -2441,6 +3051,83 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     paddingVertical: 0,
+  },
+  categoryModalInputWrap: {
+    minHeight: 46,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  categoryModalInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
+    paddingVertical: 0,
+  },
+  manualDateRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  manualDateField: {
+    flex: 1,
+    minHeight: 66,
+    borderRadius: 13,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  manualDateLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  manualDateValue: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  manualPickerWrap: {
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  manualPeriodActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 2,
+  },
+  manualPeriodSecondaryButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualPeriodSecondaryText: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  manualPeriodPrimaryButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: ACCENT,
+  },
+  manualPeriodPrimaryText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '900',
   },
   staffRoleFilterRow: {
     flexDirection: 'row',
@@ -2520,6 +3207,8 @@ const styles = StyleSheet.create({
   },
   previewModal: {
     maxHeight: '92%',
+    width: '100%',
+    flexShrink: 1,
     borderRadius: 18,
     overflow: 'hidden',
     shadowColor: '#000',
@@ -2550,6 +3239,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     marginTop: 2,
+  },
+  previewScrollView: {
+    flexShrink: 1,
   },
   previewScroll: {
     paddingHorizontal: 16,
@@ -2602,18 +3294,9 @@ const styles = StyleSheet.create({
   previewStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     gap: 10,
     marginBottom: 10,
-  },
-  previewLikeWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  previewLikeText: {
-    fontSize: 12,
-    fontWeight: '800',
   },
   previewPostTitle: {
     fontSize: 17,

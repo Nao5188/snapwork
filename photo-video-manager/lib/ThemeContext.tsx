@@ -42,11 +42,11 @@ const lightColors: AppThemeColors = {
   headerBg: '#ffffff',
   tabBar: '#ffffff',
   tabBarBorder: '#e5e5e5',
-  tabIconActive: '#444444',
+  tabIconActive: '#2196F3',
   tabIconInactive: '#999999',
   card: '#ffffff',
   inputBg: '#f5f5f5',
-  primary: '#444444',
+  primary: '#2196F3',
   primaryText: '#ffffff',
 };
 
@@ -62,12 +62,12 @@ const darkColors: AppThemeColors = {
   headerBg: '#1a1a1a',
   tabBar: '#1a1a1a',
   tabBarBorder: '#2a2a2a',
-  tabIconActive: '#ffffff',
+  tabIconActive: '#2196F3',
   tabIconInactive: '#666666',
   card: '#1e1e1e',
   inputBg: '#2a2a2a',
-  primary: '#ffffff',
-  primaryText: '#121212',
+  primary: '#2196F3',
+  primaryText: '#ffffff',
 };
 
 const STORAGE_KEY = '@theme_mode';

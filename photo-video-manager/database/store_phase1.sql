@@ -18,10 +18,17 @@ CREATE TABLE IF NOT EXISTS public.store_members (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   store_id uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  role text NOT NULL CHECK (role IN ('owner', 'staff')),
+  role text NOT NULL CHECK (role IN ('owner', 'admin', 'staff')),
   created_at timestamptz DEFAULT now(),
   UNIQUE(store_id, user_id)
 );
+
+ALTER TABLE public.store_members
+  DROP CONSTRAINT IF EXISTS store_members_role_check;
+
+ALTER TABLE public.store_members
+  ADD CONSTRAINT store_members_role_check
+  CHECK (role IN ('owner', 'admin', 'staff'));
 
 CREATE INDEX IF NOT EXISTS idx_stores_invite_code ON public.stores(invite_code);
 CREATE INDEX IF NOT EXISTS idx_stores_owner_id ON public.stores(owner_id);
@@ -84,6 +91,8 @@ AS $$
 DECLARE
   v_user_id uuid := auth.uid();
   v_store public.stores;
+  v_membership_count integer;
+  v_owner_membership_count integer;
 BEGIN
   IF v_user_id IS NULL THEN
     RAISE EXCEPTION 'Authentication required' USING ERRCODE = '28000';
@@ -95,6 +104,17 @@ BEGIN
 
   IF NULLIF(trim(p_invite_code), '') IS NULL THEN
     RAISE EXCEPTION 'Invite code is required' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT
+    COUNT(*),
+    COUNT(*) FILTER (WHERE role = 'owner')
+  INTO v_membership_count, v_owner_membership_count
+  FROM public.store_members
+  WHERE user_id = v_user_id;
+
+  IF v_membership_count > 0 AND v_owner_membership_count = 0 THEN
+    RAISE EXCEPTION 'Only store owners can create additional stores' USING ERRCODE = '42501';
   END IF;
 
   INSERT INTO public.stores (name, invite_code, owner_id)

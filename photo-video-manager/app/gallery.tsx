@@ -14,17 +14,21 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as VideoThumbnails from 'expo-video-thumbnails';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { mediaLibraryService, authService } from '@/lib/supabase';
 import { useAppTheme } from '@/lib/ThemeContext';
+import { createLocalMediaThumbnail, type MediaType } from '@/lib/mediaThumbnails';
 
 const { width } = Dimensions.get('window');
 const numColumns = 3;
 const itemSize = (width - 4) / numColumns;
+const MEDIA_DIRECTORY = `${FileSystem.documentDirectory}media/`;
+const THUMBNAIL_DIRECTORY = `${MEDIA_DIRECTORY}thumbnails/`;
+const IMPORTED_PHOTO_MAX_WIDTH = 2400;
+const IMPORTED_PHOTO_QUALITY = 0.9;
 
 interface MediaAsset {
   id: string;
@@ -43,6 +47,59 @@ interface MediaAsset {
 const getSearchParam = (value: string | string[] | undefined) => (
   Array.isArray(value) ? value[0] : value
 );
+
+const getTimestamp = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}-${now.getMilliseconds().toString().padStart(3, '0')}`;
+};
+
+const getFileExtension = (value?: string | null) => {
+  if (!value) return null;
+
+  const cleanValue = value.split('?')[0].split('#')[0];
+  const filename = cleanValue.split('/').pop() ?? '';
+  const dotIndex = filename.lastIndexOf('.');
+  if (dotIndex < 0 || dotIndex === filename.length - 1) return null;
+
+  return filename.slice(dotIndex + 1).toLowerCase();
+};
+
+const getFileBaseName = (filename: string) => {
+  const dotIndex = filename.lastIndexOf('.');
+  return dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+};
+
+const getThumbnailPath = (filename: string) => (
+  `${THUMBNAIL_DIRECTORY}${getFileBaseName(filename)}_thumb.jpg`
+);
+
+const normalizeLocalFileUri = (uri: string) => {
+  const cleanUri = uri.split('#')[0];
+
+  if (cleanUri.startsWith('file://')) return cleanUri;
+  if (cleanUri.startsWith('/')) return `file://${cleanUri}`;
+
+  return null;
+};
+
+const fileExists = async (uri: string) => {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists;
+  } catch {
+    return false;
+  }
+};
+
+const deleteLocalFileIfPresent = async (uri?: string | null) => {
+  if (!uri?.startsWith('file://')) return;
+
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch (error) {
+    console.warn('Failed to delete local media file:', error);
+  }
+};
 
 export default function GalleryScreen() {
   const router = useRouter();
@@ -66,27 +123,60 @@ export default function GalleryScreen() {
   const isAppendingMedia = returnToCreate || returnToEdit;
   const maxSelectableItems = isAppendingMedia ? Math.max(0, 5 - existingMediaCount) : 5;
 
-  const generateThumbnails = async (assets: MediaAsset[]) => {
-    const videoAssets = assets.filter(a => a.is_video);
-    await Promise.allSettled(
-      videoAssets.map(async (asset) => {
-        const fileUri = asset.file_path.split('#')[0];
+  const cleanupMediaAssets = async (assets: MediaAsset[]) => {
+    for (const asset of assets) {
+      await mediaLibraryService.deleteMedia(asset.id);
+      await deleteLocalFileIfPresent(normalizeLocalFileUri(asset.file_path));
+      await deleteLocalFileIfPresent(getThumbnailPath(asset.filename));
+    }
+  };
 
-        // ph:// URIはexpo-imageがPhotosフレームワーク経由で直接表示できるためスキップ
-        if (fileUri.startsWith('ph://')) return;
+  const ensureThumbnail = async (asset: MediaAsset) => {
+    const sourceUri = normalizeLocalFileUri(asset.file_path);
 
-        // アプリサンドボックス内のfile://のみexpo-video-thumbnailsで処理
-        try {
-          const { uri } = await VideoThumbnails.getThumbnailAsync(fileUri, {
-            time: 1000,
-            quality: 0.6,
-          });
-          setThumbnails(prev => ({ ...prev, [asset.id]: uri }));
-        } catch {
-          // サムネイル生成失敗時はフォールバック表示（アイコン表示）
-        }
-      })
-    );
+    if (!sourceUri || !(await fileExists(sourceUri))) {
+      return null;
+    }
+
+    const thumbnailPath = getThumbnailPath(asset.filename);
+    if (await fileExists(thumbnailPath)) {
+      return thumbnailPath;
+    }
+
+    try {
+      await FileSystem.makeDirectoryAsync(THUMBNAIL_DIRECTORY, { intermediates: true });
+      const mediaType: MediaType = asset.is_video ? 'video' : 'photo';
+      const generatedThumbnail = await createLocalMediaThumbnail(sourceUri, mediaType);
+      await FileSystem.copyAsync({ from: generatedThumbnail, to: thumbnailPath });
+      return thumbnailPath;
+    } catch (error) {
+      console.warn('Failed to generate gallery thumbnail:', error);
+      return null;
+    }
+  };
+
+  const filterDisplayableAssets = async (assets: MediaAsset[]) => {
+    const displayableAssets: MediaAsset[] = [];
+    const unreadableAssets: MediaAsset[] = [];
+    const nextThumbnails: Record<string, string> = {};
+
+    for (const asset of assets) {
+      const thumbnailPath = await ensureThumbnail(asset);
+
+      if (thumbnailPath) {
+        displayableAssets.push(asset);
+        nextThumbnails[asset.id] = thumbnailPath;
+      } else {
+        unreadableAssets.push(asset);
+      }
+    }
+
+    if (unreadableAssets.length > 0) {
+      await cleanupMediaAssets(unreadableAssets);
+      console.log(`Removed ${unreadableAssets.length} unreadable media items from album`);
+    }
+
+    return { displayableAssets, nextThumbnails };
   };
 
   const loadMediaAssets = async () => {
@@ -101,10 +191,9 @@ export default function GalleryScreen() {
       }
 
       const mediaData = await mediaLibraryService.getUserMedia(user.id);
-      setMediaAssets(mediaData || []);
-      if (mediaData) {
-        generateThumbnails(mediaData);
-      }
+      const { displayableAssets, nextThumbnails } = await filterDisplayableAssets(mediaData || []);
+      setThumbnails(nextThumbnails);
+      setMediaAssets(displayableAssets);
     } catch (error) {
       console.error('Error loading media assets:', error);
       Alert.alert('エラー', 'メディアファイルの読み込みに失敗しました。');
@@ -115,27 +204,8 @@ export default function GalleryScreen() {
   };
 
   const getPermissionsAndLoadAssets = async () => {
-    const result = await MediaLibrary.requestPermissionsAsync();
-    // status === 'granted' または accessPrivileges が 'all'/'limited' の場合も許可済みとして扱う
-    const granted = result.granted || result.accessPrivileges === 'limited';
-    setHasPermission(granted);
-
-    if (granted) {
-      loadMediaAssets();
-    } else if (!result.canAskAgain) {
-      // 一度拒否されて再度ダイアログを出せない場合は設定アプリへ誘導
-      Alert.alert(
-        'アクセス許可が必要です',
-        '設定アプリからSnapWorkの写真アクセスを許可してください。',
-        [
-          { text: 'キャンセル', style: 'cancel' },
-          { text: '設定を開く', onPress: () => Linking.openSettings() },
-        ]
-      );
-      setLoading(false);
-    } else {
-      setLoading(false);
-    }
+    setHasPermission(true);
+    await loadMediaAssets();
   };
 
   useEffect(() => {
@@ -194,6 +264,17 @@ export default function GalleryScreen() {
     } as any);
   };
 
+  const getSelectedAssetsInOrder = (ids: string[]) => (
+    ids
+      .map(id => mediaAssets.find(asset => asset.id === id))
+      .filter((asset): asset is MediaAsset => Boolean(asset))
+  );
+
+  const deleteMediaAssets = async (assets: MediaAsset[]) => {
+    await cleanupMediaAssets(assets);
+    await loadMediaAssets();
+  };
+
   const handleCreatePost = () => {
     if (selectedItems.length === 0) {
       Alert.alert('選択エラー', '投稿するメディアを選択してください。');
@@ -220,7 +301,7 @@ export default function GalleryScreen() {
             text: `最初の${maxSelectableItems}件で${isAppendingMedia ? '追加' : '投稿'}`,
             onPress: () => {
               const targetItems = selectedItems.slice(0, maxSelectableItems);
-              const selectedAssets = mediaAssets.filter(asset => targetItems.includes(asset.id));
+              const selectedAssets = getSelectedAssetsInOrder(targetItems);
               navigateToCreateWithMedia(selectedAssets);
             },
           },
@@ -229,7 +310,7 @@ export default function GalleryScreen() {
       return;
     }
 
-    const selectedAssets = mediaAssets.filter(asset => selectedItems.includes(asset.id));
+    const selectedAssets = getSelectedAssetsInOrder(selectedItems);
     navigateToCreateWithMedia(selectedAssets);
   };
 
@@ -252,11 +333,8 @@ export default function GalleryScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              for (const mediaId of selectedItems) {
-                await mediaLibraryService.deleteMedia(mediaId);
-              }
-
-              await loadMediaAssets();
+              const selectedAssets = getSelectedAssetsInOrder(selectedItems);
+              await deleteMediaAssets(selectedAssets);
 
               setSelectedItems([]);
               setSelectionMode(false);
@@ -277,8 +355,79 @@ export default function GalleryScreen() {
     setSelectedItems([]);
   };
 
+  const createImportedMedia = async (asset: ImagePicker.ImagePickerAsset, index: number) => {
+    const isVideo = asset.type === 'video';
+    const timestamp = `${getTimestamp()}-${String(index).padStart(2, '0')}`;
+    const sourceExtension = getFileExtension(asset.fileName) ?? getFileExtension(asset.uri);
+    const videoExtension = sourceExtension ?? (Platform.OS === 'ios' ? 'mov' : 'mp4');
+    const extension = isVideo ? videoExtension : 'jpg';
+    const filename = `imported_${isVideo ? 'video' : 'photo'}_${timestamp}.${extension}`;
+    const persistentUri = `${MEDIA_DIRECTORY}${filename}`;
+
+    await FileSystem.makeDirectoryAsync(MEDIA_DIRECTORY, { intermediates: true });
+    await FileSystem.makeDirectoryAsync(THUMBNAIL_DIRECTORY, { intermediates: true });
+
+    let importedWidth = asset.width;
+    let importedHeight = asset.height;
+
+    if (isVideo) {
+      await FileSystem.copyAsync({ from: asset.uri, to: persistentUri });
+    } else {
+      const resizeActions = asset.width && asset.width > IMPORTED_PHOTO_MAX_WIDTH
+        ? [{ resize: { width: IMPORTED_PHOTO_MAX_WIDTH } }]
+        : [];
+      const optimized = await manipulateAsync(asset.uri, resizeActions, {
+        compress: IMPORTED_PHOTO_QUALITY,
+        format: SaveFormat.JPEG,
+      });
+
+      importedWidth = optimized.width;
+      importedHeight = optimized.height;
+      await FileSystem.copyAsync({ from: optimized.uri, to: persistentUri });
+    }
+
+    const thumbnailPath = getThumbnailPath(filename);
+    try {
+      const thumbnailUri = await createLocalMediaThumbnail(
+        persistentUri,
+        isVideo ? 'video' : 'photo'
+      );
+      await FileSystem.copyAsync({ from: thumbnailUri, to: thumbnailPath });
+    } catch (error) {
+      console.warn('Failed to create imported media thumbnail:', error);
+    }
+
+    const fileInfo = await FileSystem.getInfoAsync(persistentUri);
+    const fileSize = fileInfo.exists && 'size' in fileInfo ? fileInfo.size : asset.fileSize;
+
+    return {
+      filename,
+      persistentUri,
+      thumbnailPath,
+      fileSize,
+      mimeType: isVideo ? (asset.mimeType ?? 'video/mp4') : 'image/jpeg',
+      isVideo,
+      duration: asset.duration ? Math.round(asset.duration / 1000) : undefined,
+      width: importedWidth,
+      height: importedHeight,
+    };
+  };
+
   const addFromLibrary = async () => {
     try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          'アクセス許可が必要です',
+          '端末の写真を追加するには写真ライブラリへのアクセスを許可してください。',
+          [
+            { text: 'キャンセル', style: 'cancel' },
+            { text: '設定を開く', onPress: () => Linking.openSettings() },
+          ]
+        );
+        return;
+      }
+
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsMultipleSelection: true,
@@ -294,29 +443,19 @@ export default function GalleryScreen() {
           return;
         }
 
-        for (const asset of result.assets) {
-          const now = new Date();
-          const timestamp = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
-          const isVideo = asset.type === 'video';
-          const ext = isVideo ? 'mov' : 'jpg';
-          const filename = `imported_${isVideo ? 'video' : 'photo'}_${timestamp}.${ext}`;
-
-          // Documentsディレクトリにコピー（fetch/サムネイル生成が常にアクセス可能）
-          const destDir = `${FileSystem.documentDirectory}media/`;
-          await FileSystem.makeDirectoryAsync(destDir, { intermediates: true });
-          const persistentUri = `${destDir}${filename}`;
-          await FileSystem.copyAsync({ from: asset.uri, to: persistentUri });
+        for (const [index, asset] of result.assets.entries()) {
+          const importedMedia = await createImportedMedia(asset, index);
 
           await mediaLibraryService.addMedia({
             user_id: user.id,
-            filename: filename,
-            file_path: persistentUri,
-            file_size: asset.fileSize,
-            mime_type: isVideo ? 'video/mp4' : 'image/jpeg',
-            is_video: isVideo,
-            duration: asset.duration ? Math.round(asset.duration / 1000) : undefined,
-            width: asset.width,
-            height: asset.height,
+            filename: importedMedia.filename,
+            file_path: importedMedia.persistentUri,
+            file_size: importedMedia.fileSize,
+            mime_type: importedMedia.mimeType,
+            is_video: importedMedia.isVideo,
+            duration: importedMedia.duration,
+            width: importedMedia.width,
+            height: importedMedia.height,
           });
         }
 
@@ -330,9 +469,37 @@ export default function GalleryScreen() {
     }
   };
 
+  const handleMediaRenderError = async (asset: MediaAsset) => {
+    console.warn('Removing media that failed to render:', asset.id);
+
+    try {
+      await cleanupMediaAssets([asset]);
+      setMediaAssets(prev => prev.filter(item => item.id !== asset.id));
+      setSelectedItems(prev => prev.filter(id => id !== asset.id));
+      setThumbnails(prev => {
+        const next = { ...prev };
+        delete next[asset.id];
+        return next;
+      });
+    } catch (error) {
+      console.error('Error removing media after render failure:', error);
+    }
+  };
+
   const renderMediaItem = ({ item }: { item: MediaAsset }) => {
     const isSelected = selectedItems.includes(item.id);
     const selectionIndex = selectedItems.indexOf(item.id);
+    const thumbnailUri = thumbnails[item.id];
+
+    const renderThumbnailFallback = () => (
+      <View style={styles.thumbnailPlaceholder}>
+        <Ionicons
+          name={item.is_video ? 'videocam-outline' : 'image-outline'}
+          size={28}
+          color="#aaa"
+        />
+      </View>
+    );
 
     return (
       <TouchableOpacity
@@ -342,23 +509,16 @@ export default function GalleryScreen() {
       >
         {item.is_video ? (
           <>
-            {item.file_path.startsWith('ph://') ? (
-              // ph:// URIはexpo-imageがPhotosフレームワーク経由でサムネイルを自動生成
+            {thumbnailUri ? (
               <Image
-                source={{ uri: item.file_path.split('#')[0] }}
+                source={{ uri: thumbnailUri }}
                 style={styles.photoImage}
                 contentFit="cover"
-              />
-            ) : thumbnails[item.id] ? (
-              <Image
-                source={{ uri: thumbnails[item.id] }}
-                style={styles.photoImage}
-                contentFit="cover"
+                recyclingKey={`gallery-video-${item.id}-${thumbnailUri}`}
+                onError={() => void handleMediaRenderError(item)}
               />
             ) : (
-              <View style={styles.thumbnailPlaceholder}>
-                <Ionicons name="videocam-outline" size={28} color="#aaa" />
-              </View>
+              renderThumbnailFallback()
             )}
             <View style={styles.videoIndicator}>
               <Ionicons name="play" size={12} color="white" />
@@ -370,11 +530,17 @@ export default function GalleryScreen() {
             </View>
           </>
         ) : (
-          <Image
-            source={{ uri: item.file_path }}
-            style={styles.photoImage}
-            contentFit="cover"
-          />
+          thumbnailUri ? (
+            <Image
+              source={{ uri: thumbnailUri }}
+              style={styles.photoImage}
+              contentFit="cover"
+              recyclingKey={`gallery-photo-${item.id}-${thumbnailUri}`}
+              onError={() => void handleMediaRenderError(item)}
+            />
+          ) : (
+            renderThumbnailFallback()
+          )
         )}
 
         {selectionMode && (
@@ -630,7 +796,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   permissionButton: {
-    backgroundColor: '#444444',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 14,
@@ -676,6 +842,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 6,
   },
   cancelButton: {
     paddingHorizontal: 12,
@@ -705,8 +872,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   selectedCircle: {
-    backgroundColor: '#444444',
-    borderColor: '#444444',
+    backgroundColor: '#2196F3',
+    borderColor: '#2196F3',
   },
   selectionNumber: {
     color: 'white',
@@ -761,7 +928,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   deleteButton: {
-    backgroundColor: '#FF3B30',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 12,
@@ -775,7 +942,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   createPostButton: {
-    backgroundColor: '#444444',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 18,
     paddingVertical: 10,
     borderRadius: 12,

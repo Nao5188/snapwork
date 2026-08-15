@@ -10,6 +10,7 @@ import {
 import type { FormatFilter } from 'react-native-vision-camera';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
+import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
@@ -48,7 +49,7 @@ export default function CameraScreen() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
-  const [videoResolution, setVideoResolution] = useState<'hd' | '4k'>('4k');
+  const [videoResolution, setVideoResolution] = useState<'hd' | '4k'>('hd');
   const [showExposureControl, setShowExposureControl] = useState(false);
   const [exposure, setExposure] = useState(0);
   const [appState, setAppState] = useState(AppState.currentState);
@@ -483,6 +484,10 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
+      {isFocused && (
+        <StatusBar style="light" backgroundColor="#000000" translucent={false} />
+      )}
+
       {/* Top Controls */}
       <View style={[styles.topControls, { top: Math.max(insets.top, 12) + 8 }]}>
         <View style={styles.topLeft}>

@@ -11,8 +11,8 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 
 type AppColors = ReturnType<typeof useAppTheme>['colors'];
 
-const NAV_ACCENT = '#2563EB';
-const NAV_ACCENT_SOFT = '#EEF4FF';
+const NAV_ACCENT = '#2196F3';
+const NAV_ACCENT_SOFT = '#EAF4FE';
 
 interface TabItemOptions {
   title?: string;
@@ -37,8 +37,8 @@ interface AnimatedCenterTabProps {
 
 function AnimatedTabItem({ isFocused, options, onPress, colors }: AnimatedTabItemProps) {
   const pressAnim = useRef(new Animated.Value(0)).current;
-  const activeBackground = colors.tabBar === '#1a1a1a' ? 'rgba(37,99,235,0.18)' : NAV_ACCENT_SOFT;
-  const activeColor = colors.tabBar === '#1a1a1a' ? '#8DB4FF' : NAV_ACCENT;
+  const activeBackground = colors.tabBar === '#1a1a1a' ? 'rgba(33,150,243,0.18)' : NAV_ACCENT_SOFT;
+  const activeColor = NAV_ACCENT;
 
   const handlePressIn = () => {
     Animated.timing(pressAnim, {
@@ -106,7 +106,7 @@ function AnimatedTabItem({ isFocused, options, onPress, colors }: AnimatedTabIte
 
 function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, colors, options }: AnimatedCenterTabProps) {
   const pressAnim = useRef(new Animated.Value(0)).current;
-  const activeColor = colors.tabBar === '#1a1a1a' ? '#8DB4FF' : NAV_ACCENT;
+  const activeColor = NAV_ACCENT;
 
   const handlePressIn = () => {
     Animated.timing(pressAnim, {
@@ -157,7 +157,7 @@ function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, color
           style={[
             styles.centerTabButton,
             {
-              backgroundColor: isRecording ? '#EF4444' : activeColor,
+              backgroundColor: activeColor,
               borderColor: colors.tabBar,
             },
           ]}
@@ -171,7 +171,7 @@ function AnimatedCenterTab({ isFocused, isRecording, onPress, onLongPress, color
         <Text
           style={[
             styles.centerTabLabel,
-            { color: isRecording ? '#EF4444' : activeColor },
+            { color: activeColor },
           ]}
           numberOfLines={1}
         >

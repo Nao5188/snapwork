@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { buttons } from '@/lib/theme';
+import { buttons, colors as themeColors } from '@/lib/theme';
 
 type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'danger' | 'ghost';
 type ButtonSize = 'small' | 'medium' | 'large';
@@ -176,7 +176,7 @@ export default function Button({
                 paddingVertical: sizeStyle.paddingVertical,
                 paddingHorizontal: sizeStyle.paddingHorizontal,
                 borderRadius: sizeStyle.borderRadius,
-                backgroundColor: (disabled || loading) ? '#cccccc' : '#444444',
+                backgroundColor: (disabled || loading) ? '#cccccc' : themeColors.primary,
               },
             ]}
           >

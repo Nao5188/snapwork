@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,25 @@ import {
   Dimensions,
   Modal,
   Alert,
-  Image,
   SafeAreaView,
   ScrollView,
   Switch,
   Clipboard,
+  ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { authService, storeService, supabase } from '@/lib/supabase';
 import { useAppTheme } from '@/lib/ThemeContext';
+import {
+  DrawerUserInfo,
+  getCachedDrawerUserInfo,
+  refreshDrawerUserInfo,
+} from '@/lib/drawerUserInfo';
+import { useSignedStorageUrlResolver } from '@/lib/signedStorageUrls';
+import { getStoreRoleLabel, isStoreAdminRole } from '@/lib/storeRoles';
 import { errorFeedback, lightTap, successFeedback } from '@/lib/haptics';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -28,25 +37,92 @@ interface DrawerMenuProps {
   onClose: () => void;
 }
 
-interface UserInfo {
-  displayName: string;
-  username: string;
-  avatarUrl: string | null;
-  storeName: string | null;
-  storeInviteCode: string | null;
-  role: 'owner' | 'staff' | null;
-}
-
 export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
   const router = useRouter();
   const { isDark, setThemeMode, colors } = useAppTheme();
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const [modalVisible, setModalVisible] = useState(false);
-  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
+  const [userInfo, setUserInfo] = useState<DrawerUserInfo | null>(null);
   const [storeInfoVisible, setStoreInfoVisible] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [permissionsVerified, setPermissionsVerified] = useState(false);
+  const [switchingStoreId, setSwitchingStoreId] = useState<string | null>(null);
+  const [editingStoreName, setEditingStoreName] = useState(false);
+  const [storeNameDraft, setStoreNameDraft] = useState('');
+  const [storeNameUpdating, setStoreNameUpdating] = useState(false);
+  const isMountedRef = useRef(true);
+  const currentUserIdRef = useRef<string | null>(null);
+  const loadRequestIdRef = useRef(0);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadUserInfo = useCallback(async () => {
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
+
+    const shouldApplyResult = () => (
+      isMountedRef.current && loadRequestIdRef.current === requestId
+    );
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      let user = session?.user ?? null;
+
+      if (!user) {
+        const { data: { user: currentUser } } = await authService.getCurrentUser();
+        user = currentUser;
+      }
+
+      if (!user) {
+        if (shouldApplyResult()) {
+          currentUserIdRef.current = null;
+          setUserInfo(null);
+          setPermissionsVerified(false);
+        }
+        return;
+      }
+
+      const isSameUser = currentUserIdRef.current === user.id;
+      if (!isSameUser && shouldApplyResult()) {
+        currentUserIdRef.current = user.id;
+        setUserInfo(null);
+        setPermissionsVerified(false);
+      }
+
+      const cachedUserInfo = await getCachedDrawerUserInfo(user.id);
+      if (cachedUserInfo && shouldApplyResult()) {
+        setUserInfo(previousUserInfo => {
+          if (isSameUser && previousUserInfo?.role && !cachedUserInfo.role) {
+            return {
+              ...cachedUserInfo,
+              storeInviteCode: previousUserInfo.storeInviteCode,
+              role: previousUserInfo.role,
+            };
+          }
+
+          return cachedUserInfo;
+        });
+
+        if (cachedUserInfo.role) {
+          setPermissionsVerified(true);
+        }
+      }
+
+      const nextUserInfo = await refreshDrawerUserInfo(user.id);
+      if (!nextUserInfo || !shouldApplyResult()) return;
+      setUserInfo(nextUserInfo);
+      setPermissionsVerified(true);
+    } catch (error) {
+      if (shouldApplyResult() && !currentUserIdRef.current) {
+        setPermissionsVerified(false);
+      }
+      console.error('DrawerMenu: ユーザー情報取得エラー', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadUserInfo();
+  }, [loadUserInfo]);
 
   useEffect(() => {
     if (isVisible) {
@@ -79,45 +155,16 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
         }),
       ]).start(() => setModalVisible(false));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisible]);
+  }, [isVisible, loadUserInfo, overlayAnim, slideAnim]);
 
   useEffect(() => {
     return () => {
+      isMountedRef.current = false;
       if (copiedTimer.current) {
         clearTimeout(copiedTimer.current);
       }
     };
   }, []);
-
-  const loadUserInfo = async () => {
-    try {
-      const { data: { user } } = await authService.getCurrentUser();
-      if (!user) return;
-
-      const { data } = await supabase
-        .from('users')
-        .select('username, display_name, avatar_url')
-        .eq('id', user.id)
-        .single();
-
-      if (data) {
-        const memberships = await storeService.getMyMemberships(user.id);
-        const storeName = memberships[0]?.store?.name ?? null;
-
-        setUserInfo({
-          displayName: data.display_name || data.username || 'ユーザー',
-          username: data.username || '',
-          avatarUrl: data.avatar_url || null,
-          storeName,
-          storeInviteCode: memberships[0]?.store?.invite_code ?? null,
-          role: memberships[0]?.role ?? null,
-        });
-      }
-    } catch (error) {
-      console.error('DrawerMenu: ユーザー情報取得エラー', error);
-    }
-  };
 
   const navigate = (path: string) => {
     onClose();
@@ -143,18 +190,18 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
     );
   };
 
-  const handleCopyInviteCode = async () => {
-    const inviteCode = userInfo?.storeInviteCode;
+  const handleCopyStoreNumber = async () => {
+    const storeNumber = userInfo?.storeInviteCode;
 
-    if (!inviteCode) {
+    if (!storeNumber) {
       errorFeedback();
-      Alert.alert('コピーできません', '招待コードがまだ発行されていません。');
+      Alert.alert('コピーできません', '店舗番号を取得できませんでした。時間をおいてもう一度お試しください。');
       return;
     }
 
     try {
       lightTap();
-      Clipboard.setString(inviteCode);
+      Clipboard.setString(storeNumber);
       successFeedback();
       setInviteCopied(true);
 
@@ -168,6 +215,125 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
     } catch {
       errorFeedback();
       Alert.alert('コピーできませんでした', '時間をおいてもう一度お試しください。');
+    }
+  };
+
+  const handleSwitchStore = async (storeId: string) => {
+    const userId = currentUserIdRef.current;
+    if (!userId || storeId === userInfo?.storeId || switchingStoreId) return;
+
+    setSwitchingStoreId(storeId);
+    lightTap();
+
+    try {
+      await storeService.setActiveStoreId(userId, storeId);
+      const nextUserInfo = await refreshDrawerUserInfo(userId);
+      if (nextUserInfo) {
+        setUserInfo(nextUserInfo);
+      }
+      successFeedback();
+      setStoreInfoVisible(false);
+      onClose();
+      setTimeout(() => router.replace('/(tabs)/history' as any), 280);
+    } catch (error) {
+      console.error('DrawerMenu: 店舗切り替えエラー', error);
+      errorFeedback();
+      Alert.alert('切り替えできませんでした', '店舗への所属状態を確認して、もう一度お試しください。');
+    } finally {
+      setSwitchingStoreId(null);
+    }
+  };
+
+  const handleJoinAnotherStore = () => {
+    setStoreInfoVisible(false);
+    onClose();
+    setTimeout(() => router.push('/store/join' as any), 280);
+  };
+
+  const handleCreateAnotherStore = () => {
+    setStoreInfoVisible(false);
+    onClose();
+    setTimeout(() => router.push('/store/create' as any), 280);
+  };
+
+  const handleStartStoreNameEdit = () => {
+    if (userInfo?.role !== 'owner' || !userInfo.storeId) return;
+    setStoreNameDraft(userInfo.storeName ?? '');
+    setEditingStoreName(true);
+  };
+
+  const handleCancelStoreNameEdit = () => {
+    setStoreNameDraft('');
+    setEditingStoreName(false);
+  };
+
+  const getStoreNameUpdateErrorMessage = (error: any) => {
+    const message = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`;
+
+    if (error?.code === 'PGRST202' || message.includes('store_owner_update_store_name')) {
+      return '店名変更用のDB更新が必要です。Supabaseで database/store_member_admin.sql を実行してください。';
+    }
+
+    if (message.includes('Only store owners can update store name')) {
+      return '店名を変更できるのはオーナーのみです。';
+    }
+
+    if (error?.code === '22023') {
+      return '店舗名を入力してください。';
+    }
+
+    return message.trim() || 'もう一度お試しください。';
+  };
+
+  const handleSaveStoreName = async () => {
+    const userId = currentUserIdRef.current;
+    const storeId = userInfo?.storeId;
+    const nextStoreName = storeNameDraft.trim();
+
+    if (!userId || !storeId || userInfo?.role !== 'owner') {
+      errorFeedback();
+      Alert.alert('変更できません', '店名を変更できるのはオーナーのみです。');
+      return;
+    }
+
+    if (!nextStoreName) {
+      errorFeedback();
+      Alert.alert('店舗名を入力してください');
+      return;
+    }
+
+    if (nextStoreName === userInfo?.storeName) {
+      handleCancelStoreNameEdit();
+      return;
+    }
+
+    try {
+      setStoreNameUpdating(true);
+      lightTap();
+      await storeService.updateStoreName(userId, storeId, nextStoreName);
+      const nextUserInfo = await refreshDrawerUserInfo(userId);
+
+      if (nextUserInfo) {
+        setUserInfo(nextUserInfo);
+      } else {
+        setUserInfo(prev => prev ? {
+          ...prev,
+          storeName: nextStoreName,
+          stores: prev.stores.map(store => (
+            store.id === storeId ? { ...store, name: nextStoreName } : store
+          )),
+        } : prev);
+      }
+
+      successFeedback();
+      setEditingStoreName(false);
+      setStoreNameDraft('');
+    } catch (error) {
+      console.error('DrawerMenu: 店名変更エラー', error);
+      errorFeedback();
+      Alert.alert('店名を変更できませんでした', getStoreNameUpdateErrorMessage(error));
+    } finally {
+      setStoreNameUpdating(false);
     }
   };
 
@@ -223,11 +389,17 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
     <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>{title}</Text>
   );
 
-  const roleLabel = userInfo?.role === 'owner'
-    ? 'オーナー'
-    : userInfo?.role === 'staff'
-      ? 'スタッフ'
-      : '未設定';
+  const roleLabel = getStoreRoleLabel(userInfo?.role);
+  const canUseAdminMenu = permissionsVerified && isStoreAdminRole(userInfo?.role);
+  const canUseStaffFilterSearch = permissionsVerified && userInfo?.role === 'staff';
+  const canEditStoreName = permissionsVerified && userInfo?.role === 'owner' && Boolean(userInfo?.storeId);
+  const ownsAnyStore = (userInfo?.stores ?? []).some(store => store.role === 'owner');
+  const canAddStore = permissionsVerified && ownsAnyStore;
+  const avatarStorageUrls = useMemo(
+    () => [userInfo?.avatarUrl],
+    [userInfo?.avatarUrl]
+  );
+  const resolveAvatarStorageUrl = useSignedStorageUrlResolver('avatars', avatarStorageUrls);
 
   return (
     <Modal
@@ -262,7 +434,12 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                     accessibilityLabel="店舗情報を見る"
                   >
                     {userInfo?.avatarUrl ? (
-                      <Image source={{ uri: userInfo.avatarUrl }} style={styles.avatar} />
+                      <Image
+                        source={{ uri: resolveAvatarStorageUrl(userInfo.avatarUrl) }}
+                        style={styles.avatar}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                      />
                     ) : (
                       <View style={[styles.avatarPlaceholder, { backgroundColor: isDark ? '#2a2a2a' : '#f2f2f2' }]}>
                         <Ionicons name="person" size={30} color={colors.textMuted} />
@@ -312,6 +489,18 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                     iconBackground={isDark ? '#18304c' : '#EAF3FF'}
                   />
                   <View style={[styles.itemDivider, { backgroundColor: colors.borderLight }]} />
+                  {canUseStaffFilterSearch && (
+                    <>
+                      <MenuItem
+                        icon="search-outline"
+                        label="フィルタ検索"
+                        onPress={() => navigate('/admin/filter-search')}
+                        iconColor="#E07B00"
+                        iconBackground={isDark ? '#3d2c00' : '#FFF4E0'}
+                      />
+                      <View style={[styles.itemDivider, { backgroundColor: colors.borderLight }]} />
+                    </>
+                  )}
                   <MenuItem
                     icon="add-circle-outline"
                     label="新規投稿"
@@ -340,9 +529,9 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                   />
                 </View>
 
-                {userInfo?.role === 'owner' && (
+                {canUseAdminMenu && (
                   <>
-                    <SectionTitle title="管理者" />
+                    <SectionTitle title="管理" />
                     <View style={[styles.menuGroup, { backgroundColor: colors.surface }]}>
                       <MenuItem
                         icon="search-outline"
@@ -353,11 +542,11 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                       />
                       <View style={[styles.itemDivider, { backgroundColor: colors.borderLight }]} />
                       <MenuItem
-                        icon="albums-outline"
-                        label="スタッフ別アルバム"
-                        onPress={() => navigate('/admin/staff-album')}
-                        iconColor="#1E9B50"
-                        iconBackground={isDark ? '#0f2e1a' : '#E8F8EF'}
+                        icon="bar-chart-outline"
+                        label="投稿集計"
+                        onPress={() => navigate('/admin/statistics')}
+                        iconColor="#0E8F83"
+                        iconBackground={isDark ? '#0b332f' : '#E7F7F5'}
                       />
                       <View style={[styles.itemDivider, { backgroundColor: colors.borderLight }]} />
                       <MenuItem
@@ -372,12 +561,12 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                 )}
 
                 <TouchableOpacity
-                  style={[styles.logoutButton, { backgroundColor: isDark ? '#2a1717' : '#FFF4F3', borderColor: isDark ? '#5a2927' : '#FFD4D0' }]}
+                  style={[styles.logoutButton, { backgroundColor: '#2196F3', borderColor: '#2196F3' }]}
                   onPress={handleLogout}
                   activeOpacity={0.72}
                 >
-                  <Ionicons name="log-out-outline" size={24} color="#FF3B30" />
-                  <Text style={styles.logoutText}>ログアウト</Text>
+                  <Ionicons name="log-out-outline" size={24} color="#FFFFFF" />
+                  <Text style={[styles.logoutText, { color: '#FFFFFF' }]}>ログアウト</Text>
                 </TouchableOpacity>
 
                 <SectionTitle title="その他" />
@@ -422,7 +611,11 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
                 <View>
                   <Text style={[styles.infoModalTitle, { color: colors.text }]}>店舗情報</Text>
                   <Text style={[styles.infoModalSubtitle, { color: colors.textSecondary }]}>
-                    スタッフ招待に使う情報です
+                    {canAddStore
+                      ? '表示店舗の切り替え、参加、追加ができます'
+                      : canUseAdminMenu
+                      ? '店舗番号を確認・コピーできます'
+                      : '所属店舗の情報です'}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -438,49 +631,192 @@ export default function DrawerMenu({ isVisible, onClose }: DrawerMenuProps) {
 
               <View style={[styles.infoRow, { borderColor: colors.borderLight }]}>
                 <Text style={[styles.infoLabel, { color: colors.textMuted }]}>店舗名</Text>
-                <Text style={[styles.infoValue, { color: colors.text }]} numberOfLines={1}>
-                  {userInfo?.storeName ?? '店舗未所属'}
-                </Text>
+                {editingStoreName ? (
+                  <View style={styles.storeNameEditBlock}>
+                    <TextInput
+                      style={[
+                        styles.storeNameInput,
+                        {
+                          color: colors.text,
+                          borderColor: colors.borderLight,
+                          backgroundColor: colors.surface2,
+                        },
+                      ]}
+                      value={storeNameDraft}
+                      onChangeText={setStoreNameDraft}
+                      placeholder="店舗名"
+                      placeholderTextColor={colors.textMuted}
+                      maxLength={80}
+                      autoFocus
+                      editable={!storeNameUpdating}
+                      returnKeyType="done"
+                      onSubmitEditing={handleSaveStoreName}
+                    />
+                    <View style={styles.storeNameActionRow}>
+                      <TouchableOpacity
+                        style={[styles.storeNameSecondaryButton, { borderColor: colors.borderLight }]}
+                        onPress={handleCancelStoreNameEdit}
+                        activeOpacity={0.72}
+                        disabled={storeNameUpdating}
+                      >
+                        <Text style={[styles.storeNameSecondaryButtonText, { color: colors.textSecondary }]}>
+                          キャンセル
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.storeNamePrimaryButton, storeNameUpdating && styles.storeNameButtonDisabled]}
+                        onPress={handleSaveStoreName}
+                        activeOpacity={0.78}
+                        disabled={storeNameUpdating}
+                      >
+                        {storeNameUpdating ? (
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                        ) : (
+                          <Text style={styles.storeNamePrimaryButtonText}>保存</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.storeNameValueRow}>
+                    <Text style={[styles.infoValue, styles.storeNameValueText, { color: colors.text }]} numberOfLines={1}>
+                      {userInfo?.storeName ?? '店舗未所属'}
+                    </Text>
+                    {canEditStoreName ? (
+                      <TouchableOpacity
+                        style={styles.storeNameEditButton}
+                        onPress={handleStartStoreNameEdit}
+                        activeOpacity={0.72}
+                        accessibilityRole="button"
+                        accessibilityLabel="店舗名を変更"
+                      >
+                        <Ionicons name="create-outline" size={15} color="#2196F3" />
+                        <Text style={styles.storeNameEditButtonText}>変更</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                )}
               </View>
               <View style={[styles.infoRow, { borderColor: colors.borderLight }]}>
                 <Text style={[styles.infoLabel, { color: colors.textMuted }]}>あなたの役割</Text>
                 <Text style={[styles.infoValue, { color: colors.text }]}>{roleLabel}</Text>
               </View>
-              <View style={styles.inviteCodeBlock}>
-                <Text style={[styles.infoLabel, { color: colors.textMuted }]}>招待コード</Text>
-                <View style={styles.inviteCodeRow}>
-                  <Text
-                    style={[styles.inviteCodeText, { color: colors.text }]}
-                    selectable
-                  >
-                    {userInfo?.storeInviteCode ?? '未発行'}
-                  </Text>
+              <View style={[styles.storeSwitcher, { borderColor: colors.borderLight }]}>
+                <Text style={[styles.infoLabel, { color: colors.textMuted }]}>表示する店舗</Text>
+                <View style={styles.storeOptionList}>
+                  {(userInfo?.stores ?? []).map(store => {
+                    const isActive = store.id === userInfo?.storeId;
+                    const isSwitching = store.id === switchingStoreId;
+
+                    return (
+                      <TouchableOpacity
+                        key={store.id}
+                        style={[
+                          styles.storeOption,
+                          {
+                            backgroundColor: isActive
+                              ? 'rgba(33, 150, 243, 0.10)'
+                              : colors.surface2,
+                            borderColor: isActive ? '#2196F3' : colors.borderLight,
+                          },
+                        ]}
+                        onPress={() => handleSwitchStore(store.id)}
+                        activeOpacity={0.72}
+                        disabled={isActive || switchingStoreId !== null}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${store.name}へ切り替え`}
+                      >
+                        <View style={styles.storeOptionText}>
+                          <Text style={[styles.storeOptionName, { color: colors.text }]} numberOfLines={1}>
+                            {store.name}
+                          </Text>
+                          <Text style={[styles.storeOptionRole, { color: colors.textMuted }]}>
+                            {getStoreRoleLabel(store.role)}
+                          </Text>
+                        </View>
+                        {isSwitching ? (
+                          <ActivityIndicator size="small" color="#2196F3" />
+                        ) : (
+                          <Ionicons
+                            name={isActive ? 'checkmark-circle' : 'chevron-forward'}
+                            size={21}
+                            color={isActive ? '#2196F3' : colors.textMuted}
+                          />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <View style={styles.storeActionRow}>
                   <TouchableOpacity
-                    style={[
-                      styles.copyButton,
-                      {
-                        backgroundColor: inviteCopied ? '#E8F8EF' : '#2196F3',
-                      },
-                    ]}
-                    onPress={handleCopyInviteCode}
-                    activeOpacity={0.78}
+                    style={[styles.storeActionButton, { borderColor: colors.borderLight }]}
+                    onPress={handleJoinAnotherStore}
+                    activeOpacity={0.72}
                     accessibilityRole="button"
-                    accessibilityLabel="招待コードをコピー"
+                    accessibilityLabel="店舗に参加する"
                   >
-                    <Ionicons
-                      name={inviteCopied ? 'checkmark' : 'copy-outline'}
-                      size={16}
-                      color={inviteCopied ? '#1E9B50' : '#FFFFFF'}
-                    />
-                    <Text style={[styles.copyButtonText, { color: inviteCopied ? '#1E9B50' : '#FFFFFF' }]}>
-                      {inviteCopied ? 'コピー済み' : 'コピー'}
+                    <Ionicons name="people-outline" size={19} color="#2196F3" />
+                    <Text style={[styles.storeActionButtonText, { color: '#2196F3' }]} numberOfLines={1}>
+                      店舗に参加
                     </Text>
                   </TouchableOpacity>
+                  {canAddStore ? (
+                    <TouchableOpacity
+                      style={[styles.storeActionButton, { borderColor: colors.borderLight }]}
+                      onPress={handleCreateAnotherStore}
+                      activeOpacity={0.72}
+                      accessibilityRole="button"
+                      accessibilityLabel="店舗を追加する"
+                    >
+                      <Ionicons name="storefront-outline" size={19} color="#8B5CF6" />
+                      <Text style={[styles.storeActionButtonText, { color: '#8B5CF6' }]} numberOfLines={1}>
+                        店舗を追加
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
-                <Text style={[styles.inviteCodeHelp, { color: inviteCopied ? '#1E9B50' : colors.textMuted }]}>
-                  {inviteCopied ? '招待コードをコピーしました' : 'スタッフへ共有して店舗に参加してもらえます'}
-                </Text>
               </View>
+              {canUseAdminMenu && (
+                <View style={styles.inviteCodeBlock}>
+                  <Text style={[styles.infoLabel, { color: colors.textMuted }]}>店舗番号</Text>
+                  <View style={styles.inviteCodeRow}>
+                    <Text
+                      style={[styles.inviteCodeText, { color: colors.text }]}
+                      selectable
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.72}
+                    >
+                      {userInfo?.storeInviteCode ?? '取得中'}
+                    </Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.copyButton,
+                        {
+                          backgroundColor: userInfo?.storeInviteCode ? '#2196F3' : colors.surface2,
+                        },
+                      ]}
+                      onPress={handleCopyStoreNumber}
+                      activeOpacity={0.78}
+                      disabled={!userInfo?.storeInviteCode}
+                      accessibilityRole="button"
+                      accessibilityLabel="店舗番号をコピー"
+                    >
+                      <Ionicons
+                        name={inviteCopied ? 'checkmark' : 'copy-outline'}
+                        size={16}
+                        color={userInfo?.storeInviteCode ? '#FFFFFF' : colors.textMuted}
+                      />
+                      <Text style={[styles.copyButtonText, { color: userInfo?.storeInviteCode ? '#FFFFFF' : colors.textMuted }]}>
+                        {inviteCopied ? 'コピー済み' : 'コピー'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={[styles.inviteCodeHelp, { color: inviteCopied ? '#1E9B50' : colors.textMuted }]}>
+                    {inviteCopied ? '店舗番号をコピーしました' : 'オーナー・管理者がスタッフへ共有できます'}
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
         </Modal>
@@ -639,7 +975,7 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   logoutText: {
-    color: '#FF3B30',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: 0,
@@ -707,6 +1043,125 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0,
   },
+  storeNameValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  storeNameValueText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  storeNameEditButton: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(33, 150, 243, 0.10)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  storeNameEditButtonText: {
+    color: '#2196F3',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  storeNameEditBlock: {
+    gap: 10,
+  },
+  storeNameInput: {
+    minHeight: 46,
+    borderRadius: 13,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  storeNameActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  storeNameSecondaryButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storeNameSecondaryButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  storeNamePrimaryButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2196F3',
+  },
+  storeNamePrimaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  storeNameButtonDisabled: {
+    opacity: 0.72,
+  },
+  storeSwitcher: {
+    borderTopWidth: 1,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  storeOptionList: {
+    gap: 8,
+  },
+  storeOption: {
+    minHeight: 54,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  storeOptionText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  storeOptionName: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  storeOptionRole: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  storeActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  storeActionButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  storeActionButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0,
+  },
   inviteCodeBlock: {
     marginTop: 4,
     borderRadius: 16,
@@ -720,9 +1175,10 @@ const styles = StyleSheet.create({
   },
   inviteCodeText: {
     flex: 1,
-    fontSize: 28,
+    fontSize: 20,
     fontWeight: '800',
-    letterSpacing: 2,
+    letterSpacing: 0.8,
+    lineHeight: 26,
   },
   copyButton: {
     minHeight: 36,

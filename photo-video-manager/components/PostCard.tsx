@@ -12,14 +12,19 @@ import {
   Alert,
   ActionSheetIOS,
   Platform,
-  Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Video, ResizeMode } from 'expo-av';
-import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Ionicons } from '@expo/vector-icons';
 import SkeletonLoader from './SkeletonLoader';
 import { useAppTheme } from '@/lib/ThemeContext';
+import {
+  getMediaThumbnailUrl,
+  hasDedicatedThumbnail,
+  shouldRefreshLegacyVideoThumbnail,
+} from '@/lib/mediaThumbnails';
+import { useSignedStorageUrlResolver } from '@/lib/signedStorageUrls';
+import { useVideoThumbnailRepair } from '@/lib/useVideoThumbnailRepair';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_HORIZONTAL_MARGIN = 10;
@@ -62,6 +67,7 @@ interface PostCardProps {
   onEdit?: () => void;
   onDelete?: () => void;
   onDownload?: () => void;
+  downloadLabel?: string;
   onLike?: () => void;
   showActions?: boolean;
   showProfile?: boolean;
@@ -97,16 +103,22 @@ export default function PostCard({
   onEdit,
   onDelete,
   onDownload,
+  downloadLabel = '保存',
   showActions = false,
   showProfile = true
 }: PostCardProps) {
   const [currentMediaIndex, setCurrentMediaIndex] = useState(0);
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
+  const [thumbnailErrors, setThumbnailErrors] = useState<Set<string>>(new Set());
   const [imageLoading, setImageLoading] = useState<Set<string>>(new Set(['initial']));
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
-  const [videoThumbnails, setVideoThumbnails] = useState<Record<string, string>>({});
   const [mediaAspectRatios, setMediaAspectRatios] = useState<Record<string, number>>({});
   const [reduceMotion, setReduceMotion] = useState(false);
+  const {
+    failedKeys: failedVideoThumbnailKeys,
+    repairVideoThumbnail,
+    thumbnailUrls: repairedVideoThumbnailUrls,
+  } = useVideoThumbnailRepair();
   const { colors } = useAppTheme();
 
   // 控えめなスライドインアニメーション
@@ -116,17 +128,6 @@ export default function PostCard({
   useEffect(() => {
     // reduceMotion設定を確認
     AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
-  }, []);
-
-  const generateThumbnail = useCallback(async (id: string, uri: string) => {
-    if (!uri) return;
-    try {
-      // time: 1000ms を使用して空白フレームを回避
-      const { uri: thumbUri } = await VideoThumbnails.getThumbnailAsync(uri, { time: 1000, quality: 0.6 });
-      setVideoThumbnails(prev => ({ ...prev, [id]: thumbUri }));
-    } catch {
-      // サムネイル生成失敗時はフォールバック（暗い背景）を表示
-    }
   }, []);
 
   useEffect(() => {
@@ -156,15 +157,19 @@ export default function PostCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduceMotion]);
 
-  const handleImageError = (mediaId: string) => {
-    console.log('Image load error for:', mediaId);
-    setImageErrors(prev => new Set(prev).add(mediaId));
+  const getImageErrorKey = useCallback((mediaId: string, mediaUrl: string) => (
+    `${mediaId}:${mediaUrl}`
+  ), []);
+
+  const handleImageError = useCallback((mediaId: string, mediaUrl: string) => {
+    console.log('Image load error for:', mediaId, mediaUrl);
+    setImageErrors(prev => new Set(prev).add(getImageErrorKey(mediaId, mediaUrl)));
     setImageLoading(prev => {
       const next = new Set(prev);
       next.delete(mediaId);
       return next;
     });
-  };
+  }, [getImageErrorKey]);
 
   const handleImageLoad = (mediaId: string) => {
     setImageLoading(prev => {
@@ -205,14 +210,91 @@ export default function PostCard({
     return [];
   }, [post.mediaItems, post.mediaUri, post.isVideo]);
 
-  useEffect(() => {
-    mediaItems.forEach(item => {
-      if (item.isVideo && !videoThumbnails[item.id]) {
-        generateThumbnail(item.id, item.mediaUrl);
-      }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mediaItems]);
+  const getVideoThumbnailKey = useCallback(
+    (item: MediaItem) => `${item.id}:${item.mediaUrl}`,
+    []
+  );
+
+  const postStorageUrls = useMemo(() => (
+    mediaItems.flatMap((item) => {
+      const thumbnailUrl = getMediaThumbnailUrl(item.mediaUrl);
+      const repairedThumbnailUrl = repairedVideoThumbnailUrls[getVideoThumbnailKey(item)];
+      return repairedThumbnailUrl
+        ? [item.mediaUrl, thumbnailUrl, repairedThumbnailUrl]
+        : [item.mediaUrl, thumbnailUrl];
+    })
+  ), [getVideoThumbnailKey, mediaItems, repairedVideoThumbnailUrls]);
+  const resolvePostStorageUrl = useSignedStorageUrlResolver('posts', postStorageUrls);
+  const videoThumbnailStorageUrls = useMemo(() => (
+    mediaItems
+      .filter(item => item.isVideo)
+      .flatMap((item) => {
+        const thumbnailUrl = getMediaThumbnailUrl(item.mediaUrl);
+        const repairedThumbnailUrl = repairedVideoThumbnailUrls[getVideoThumbnailKey(item)];
+        return repairedThumbnailUrl ? [thumbnailUrl, repairedThumbnailUrl] : [thumbnailUrl];
+      })
+  ), [getVideoThumbnailKey, mediaItems, repairedVideoThumbnailUrls]);
+  const resolveVideoThumbnailStorageUrl = useSignedStorageUrlResolver(
+    'posts',
+    videoThumbnailStorageUrls,
+    { deferStorageUrlsUntilSigned: true },
+  );
+
+  const avatarStorageUrls = useMemo(
+    () => [post.userProfile?.avatar_url],
+    [post.userProfile?.avatar_url]
+  );
+  const resolveAvatarStorageUrl = useSignedStorageUrlResolver('avatars', avatarStorageUrls);
+
+  const getListImageUrl = useCallback(
+    (item: MediaItem) => {
+      const thumbnailKey = getVideoThumbnailKey(item);
+      const shouldUseOriginal =
+        !item.isVideo
+        && thumbnailErrors.has(thumbnailKey)
+        && hasDedicatedThumbnail(item.mediaUrl);
+      return resolvePostStorageUrl(
+        shouldUseOriginal ? item.mediaUrl : getMediaThumbnailUrl(item.mediaUrl)
+      );
+    },
+    [getVideoThumbnailKey, resolvePostStorageUrl, thumbnailErrors]
+  );
+
+  const getVideoThumbnailUrl = useCallback(
+    (item: MediaItem) => resolveVideoThumbnailStorageUrl(
+      repairedVideoThumbnailUrls[getVideoThumbnailKey(item)] ?? getMediaThumbnailUrl(item.mediaUrl)
+    ),
+    [getVideoThumbnailKey, repairedVideoThumbnailUrls, resolveVideoThumbnailStorageUrl]
+  );
+
+  const handleVideoThumbnailError = useCallback((item: MediaItem) => {
+    if (!hasDedicatedThumbnail(item.mediaUrl)) {
+      setThumbnailErrors(prev => new Set(prev).add(getVideoThumbnailKey(item)));
+      return;
+    }
+
+    repairVideoThumbnail(getVideoThumbnailKey(item), item.mediaUrl, { force: true });
+  }, [getVideoThumbnailKey, repairVideoThumbnail]);
+
+  const handleListImageError = useCallback((item: MediaItem, failedUrl: string) => {
+    const thumbnailKey = getVideoThumbnailKey(item);
+    const isThumbnailAttempt =
+      !item.isVideo
+      && hasDedicatedThumbnail(item.mediaUrl)
+      && !thumbnailErrors.has(thumbnailKey);
+
+    if (isThumbnailAttempt) {
+      setThumbnailErrors(prev => new Set(prev).add(thumbnailKey));
+      setImageLoading(prev => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      return;
+    }
+
+    handleImageError(item.id, failedUrl);
+  }, [getVideoThumbnailKey, handleImageError, thumbnailErrors]);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,37 +304,46 @@ export default function PostCard({
         return;
       }
 
-      RNImage.getSize(
-        item.mediaUrl,
-        (imageWidth, imageHeight) => {
+      Image.loadAsync(getListImageUrl(item))
+        .then(({ width: imageWidth, height: imageHeight }) => {
           if (cancelled || imageWidth <= 0 || imageHeight <= 0) return;
           const aspectRatio = imageWidth / imageHeight;
           setMediaAspectRatios((prev) => (
             prev[item.id] ? prev : { ...prev, [item.id]: aspectRatio }
           ));
-        },
-        () => {
-          // 取得できない場合は仮比率のまま、画像自体はそのまま表示します。
-        }
-      );
+        })
+        .catch(() => {});
     });
 
     return () => {
       cancelled = true;
     };
-  }, [mediaItems, mediaAspectRatios]);
+  }, [getListImageUrl, mediaItems, mediaAspectRatios]);
+
+  useEffect(() => {
+    if (!shouldRefreshLegacyVideoThumbnail(post.createdAt)) return;
+
+    mediaItems.forEach((item) => {
+      if (item.isVideo && hasDedicatedThumbnail(item.mediaUrl)) {
+        repairVideoThumbnail(getVideoThumbnailKey(item), item.mediaUrl, { markFailed: false });
+      }
+    });
+  }, [getVideoThumbnailKey, mediaItems, post.createdAt, repairVideoThumbnail]);
 
   const singleItem = mediaItems.length === 1 ? mediaItems[0] : null;
   const isSingleVideoPlaying = singleItem ? playingVideoId === singleItem.id : false;
+  const singleImageUrl = singleItem && !singleItem.isVideo ? getListImageUrl(singleItem) : '';
+  const singleVideoThumbnailUrl = singleItem?.isVideo ? getVideoThumbnailUrl(singleItem) : '';
+  const singleImageErrorKey = singleItem ? getImageErrorKey(singleItem.id, singleImageUrl) : '';
 
-  const getAvatarSource = () => {
+  const getAvatarSource = useCallback(() => {
     if (post.userProfile?.avatar_url &&
         !post.userProfile.avatar_url.includes('placeholder') &&
         !post.userProfile.avatar_url.startsWith('file://')) {
-      return { uri: post.userProfile.avatar_url };
+      return { uri: resolveAvatarStorageUrl(post.userProfile.avatar_url) };
     }
     return null;
-  };
+  }, [post.userProfile?.avatar_url, resolveAvatarStorageUrl]);
 
   const categoryTags = useMemo(() => {
     return (post.description || '')
@@ -279,7 +370,7 @@ export default function PostCard({
     if (Platform.OS === 'ios') {
       if (showActions && onDownload) {
         ActionSheetIOS.showActionSheetWithOptions(
-          { options: ['キャンセル', '保存', '編集', '削除'], destructiveButtonIndex: 3, cancelButtonIndex: 0 },
+          { options: ['キャンセル', downloadLabel, '編集', '削除'], destructiveButtonIndex: 3, cancelButtonIndex: 0 },
           (buttonIndex) => {
             if (buttonIndex === 1) onDownload?.();
             else if (buttonIndex === 2) onEdit?.();
@@ -296,7 +387,7 @@ export default function PostCard({
         );
       } else if (onDownload) {
         ActionSheetIOS.showActionSheetWithOptions(
-          { options: ['キャンセル', '保存'], cancelButtonIndex: 0 },
+          { options: ['キャンセル', downloadLabel], cancelButtonIndex: 0 },
           (buttonIndex) => {
             if (buttonIndex === 1) onDownload?.();
           }
@@ -304,7 +395,7 @@ export default function PostCard({
       }
     } else {
       const buttons: any[] = [
-        ...(onDownload ? [{ text: '保存', onPress: () => onDownload() }] : []),
+        ...(onDownload ? [{ text: downloadLabel, onPress: () => onDownload() }] : []),
         ...(showActions ? [
           { text: '編集', onPress: () => onEdit?.() },
           { text: '削除', style: 'destructive', onPress: () => onDelete?.() },
@@ -317,6 +408,10 @@ export default function PostCard({
 
   const renderMediaItem = ({ item }: { item: MediaItem; index: number }) => {
     const isPlaying = playingVideoId === item.id;
+    const imageUrl = getListImageUrl(item);
+    const videoThumbnailUrl = item.isVideo ? getVideoThumbnailUrl(item) : '';
+    const imageErrorKey = getImageErrorKey(item.id, imageUrl);
+
     return (
       <Pressable
         style={[styles.mediaItem, { height: mediaHeight }]}
@@ -328,7 +423,7 @@ export default function PostCard({
         {item.isVideo ? (
           isPlaying ? (
             <Video
-              source={{ uri: item.mediaUrl }}
+              source={{ uri: resolvePostStorageUrl(item.mediaUrl) }}
               style={styles.mediaImage}
               resizeMode={ResizeMode.COVER}
               shouldPlay
@@ -342,18 +437,24 @@ export default function PostCard({
             />
           ) : (
             <View style={[styles.mediaImage, styles.videoThumbnailBg]}>
-              {videoThumbnails[item.id] ? (
+              {!thumbnailErrors.has(getVideoThumbnailKey(item))
+                && !failedVideoThumbnailKeys.has(getVideoThumbnailKey(item))
+                && hasDedicatedThumbnail(item.mediaUrl)
+                && videoThumbnailUrl ? (
                 <Image
-                  source={{ uri: videoThumbnails[item.id] }}
+                  source={{ uri: videoThumbnailUrl }}
                   style={StyleSheet.absoluteFillObject}
                   contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={`post-video-thumbnail-${item.id}`}
+                  onError={() => handleVideoThumbnailError(item)}
                 />
               ) : (
                 <Ionicons name="videocam-outline" size={48} color="rgba(255,255,255,0.4)" />
               )}
             </View>
           )
-        ) : imageErrors.has(item.id) ? (
+        ) : imageErrors.has(imageErrorKey) ? (
           <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
             <Ionicons name="image-outline" size={48} color={colors.textMuted} />
             <Text style={[styles.placeholderText, { color: colors.textMuted }]}>画像を読み込めません</Text>
@@ -366,10 +467,12 @@ export default function PostCard({
               </View>
             )}
             <Image
-              source={{ uri: item.mediaUrl }}
+              source={{ uri: imageUrl }}
               style={[styles.mediaImage, imageLoading.has(item.id) && { opacity: 0 }]}
               contentFit="contain"
-              onError={() => handleImageError(item.id)}
+              cachePolicy="memory-disk"
+              recyclingKey={`post-image-${imageErrorKey}`}
+              onError={() => handleListImageError(item, imageUrl)}
               onLoad={() => handleImageLoad(item.id)}
             />
           </>
@@ -419,6 +522,8 @@ export default function PostCard({
                       source={getAvatarSource()}
                       style={styles.avatar}
                       contentFit="cover"
+                      cachePolicy="memory-disk"
+                      recyclingKey={`post-avatar-${post.userProfile?.id ?? post.id}`}
                     />
                   </View>
                 ) : (
@@ -468,7 +573,7 @@ export default function PostCard({
                 {singleItem.isVideo ? (
                   isSingleVideoPlaying ? (
                     <Video
-                      source={{ uri: singleItem.mediaUrl }}
+                      source={{ uri: resolvePostStorageUrl(singleItem.mediaUrl) }}
                       style={styles.singleMediaImage}
                       resizeMode={ResizeMode.COVER}
                       shouldPlay
@@ -482,28 +587,36 @@ export default function PostCard({
                     />
                   ) : (
                     <View style={[styles.singleMediaImage, styles.videoThumbnailBg]}>
-                      {videoThumbnails[singleItem.id] ? (
+                      {!thumbnailErrors.has(getVideoThumbnailKey(singleItem))
+                        && !failedVideoThumbnailKeys.has(getVideoThumbnailKey(singleItem))
+                        && hasDedicatedThumbnail(singleItem.mediaUrl)
+                        && singleVideoThumbnailUrl ? (
                         <Image
-                          source={{ uri: videoThumbnails[singleItem.id] }}
+                          source={{ uri: singleVideoThumbnailUrl }}
                           style={StyleSheet.absoluteFillObject}
                           contentFit="cover"
+                          cachePolicy="memory-disk"
+                          recyclingKey={`post-video-thumbnail-${singleItem.id}`}
+                          onError={() => handleVideoThumbnailError(singleItem)}
                         />
                       ) : (
                         <Ionicons name="videocam-outline" size={48} color="rgba(255,255,255,0.4)" />
                       )}
                     </View>
                   )
-                ) : imageErrors.has(singleItem.id) ? (
+                ) : imageErrors.has(singleImageErrorKey) ? (
                   <View style={[styles.imagePlaceholder, { backgroundColor: colors.surface2 }]}>
                     <Ionicons name="image-outline" size={48} color={colors.textMuted} />
                     <Text style={[styles.placeholderText, { color: colors.textMuted }]}>画像を読み込めません</Text>
                   </View>
                 ) : (
                   <Image
-                    source={{ uri: singleItem.mediaUrl }}
+                    source={{ uri: singleImageUrl }}
                     style={styles.singleMediaImage}
                     contentFit="contain"
-                    onError={() => handleImageError(singleItem.id)}
+                    cachePolicy="memory-disk"
+                    recyclingKey={`post-image-${singleImageErrorKey}`}
+                    onError={() => handleListImageError(singleItem, singleImageUrl)}
                   />
                 )}
                 {singleItem.isVideo && !isSingleVideoPlaying && (

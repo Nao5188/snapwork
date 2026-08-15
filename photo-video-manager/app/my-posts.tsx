@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { postService, authService, supabase, storeService } from '@/lib/supabase';
+import { subscribeActiveStoreChanged } from '@/lib/activeStoreEvents';
 import PostCard from '@/components/PostCard';
 import { PostCardSkeleton } from '@/components/SkeletonLoader';
 import { useAppTheme } from '@/lib/ThemeContext';
@@ -196,6 +197,12 @@ export default function MyPostsScreen() {
     }, [loadPosts])
   );
 
+  useEffect(() => {
+    return subscribeActiveStoreChanged(() => {
+      loadPosts();
+    });
+  }, [loadPosts]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await loadPosts();
@@ -238,8 +245,7 @@ export default function MyPostsScreen() {
     );
   };
 
-  const handleLike = (postId: string) => {
-    console.log('Like post:', postId);
+  const handleLike = (_postId: string) => {
   };
 
   const renderPostItem = ({ item, index }: { item: PostHistoryItem; index: number }) => {
@@ -440,7 +446,7 @@ const styles = StyleSheet.create({
   emptyButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#444444',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 14,

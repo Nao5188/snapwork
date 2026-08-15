@@ -61,10 +61,10 @@ BEGIN
         FROM public.store_members sm
         WHERE sm.store_id = p.store_id
           AND sm.user_id = auth.uid()
-          AND sm.role = 'owner'
+          AND sm.role IN ('owner', 'admin')
       )
   ) THEN
-    RAISE EXCEPTION 'Only store owners can change review status'
+    RAISE EXCEPTION 'Only store owners and admins can change review status'
       USING ERRCODE = '42501';
   END IF;
 

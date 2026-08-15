@@ -229,7 +229,7 @@ export default function MediaSelector({
         {/* Camera button */}
         <View style={styles.cameraSection}>
           <TouchableOpacity style={styles.cameraButton} onPress={takePhoto}>
-            <Ionicons name="camera" size={32} color="#0095f6" />
+            <Ionicons name="camera" size={32} color="#2196F3" />
             <Text style={styles.cameraButtonText}>撮影する</Text>
           </TouchableOpacity>
         </View>
@@ -294,7 +294,7 @@ const styles = StyleSheet.create({
   },
   confirmText: {
     fontSize: 16,
-    color: '#0095f6',
+    color: '#2196F3',
     fontWeight: '600',
     textAlign: 'right',
   },
@@ -318,7 +318,7 @@ const styles = StyleSheet.create({
   },
   cameraButtonText: {
     fontSize: 16,
-    color: '#0095f6',
+    color: '#2196F3',
     fontWeight: '500',
   },
   loadingContainer: {
@@ -340,7 +340,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   permissionButton: {
-    backgroundColor: '#0095f6',
+    backgroundColor: '#2196F3',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
@@ -361,7 +361,7 @@ const styles = StyleSheet.create({
   },
   selectedAsset: {
     borderWidth: 3,
-    borderColor: '#0095f6',
+    borderColor: '#2196F3',
     borderRadius: 4,
   },
   assetImage: {
@@ -400,8 +400,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   selectedIndicator: {
-    backgroundColor: '#0095f6',
-    borderColor: '#0095f6',
+    backgroundColor: '#2196F3',
+    borderColor: '#2196F3',
   },
   selectionNumber: {
     color: 'white',

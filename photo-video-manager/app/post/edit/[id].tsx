@@ -21,7 +21,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { postService, authService, fileStorageService } from '@/lib/supabase';
+import { postService, authService, fileStorageService, storeService } from '@/lib/supabase';
+import { secureDraftStorage } from '@/lib/secureDraftStorage';
 import { useAppTheme } from '@/lib/ThemeContext';
 import { gradients } from '@/lib/theme';
 import { buildPostMenuName, POST_MENU_NAME_MAX_LENGTH } from '@/lib/postMenuName';
@@ -38,13 +39,16 @@ const MEDIA_ITEM_SIZE = Math.min(
   )
 );
 
-const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', '縮毛', 'トリートメント'];
+const DEFAULT_MENU_CATEGORIES = ['カット', 'カラー', 'パーマ', 'ブリーチ', '縮毛', 'トリートメント'];
 const CUSTOM_CATEGORIES_KEY = 'custom_menu_categories';
+const getStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}:${storeId}`;
+const getLegacyStoreCustomCategoriesKey = (storeId: string) => `${CUSTOM_CATEGORIES_KEY}_${storeId}`;
 const EDIT_POST_DRAFT_KEY_PREFIX = 'edit_post_media_draft';
 const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   カット: 'cut-outline',
   カラー: 'color-palette-outline',
   パーマ: 'water-outline',
+  ブリーチ: 'sparkles-outline',
   縮毛: 'sparkles-outline',
   トリートメント: 'flask-outline',
 };
@@ -70,6 +74,33 @@ const getSearchParam = (value: string | string[] | undefined) => (
 );
 
 const getEditPostDraftKey = (postId: string) => `${EDIT_POST_DRAFT_KEY_PREFIX}_${postId}`;
+
+const normalizeCategory = (category: string) => category.trim().normalize('NFKC');
+
+const parseStoredCategories = (value: string | null) => {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map(category => normalizeCategory(`${category}`)).filter(Boolean);
+    }
+  } catch {
+    // Older values may be comma-separated plain text.
+  }
+
+  return value.split(',').map(category => normalizeCategory(category)).filter(Boolean);
+};
+
+const uniqueCategories = (categories: string[]) => {
+  const seen = new Set<string>();
+  return categories.filter(category => {
+    const normalizedCategory = normalizeCategory(category);
+    if (!normalizedCategory || seen.has(normalizedCategory)) return false;
+    seen.add(normalizedCategory);
+    return true;
+  });
+};
 
 const decodeMediaUri = (uri: string) => {
   try {
@@ -131,6 +162,7 @@ export default function EditPostScreen() {
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [customCategories, setCustomCategories] = useState<string[]>([]);
@@ -139,9 +171,10 @@ export default function EditPostScreen() {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const processedMediaParamsRef = useRef<string | null>(null);
+  const initialRemoteMediaUrlsRef = useRef<string[]>([]);
+  const initialMediaItemsRef = useRef<MediaItem[]>([]);
 
   useEffect(() => {
-    loadCustomCategories();
     checkAuthAndLoadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -166,7 +199,7 @@ export default function EditPostScreen() {
 
       if (appendMedia) {
         try {
-          const storedDraft = await AsyncStorage.getItem(getEditPostDraftKey(id));
+          const storedDraft = await secureDraftStorage.getItem(getEditPostDraftKey(id));
           if (storedDraft) {
             const draft = JSON.parse(storedDraft) as EditPostDraft;
             if (!cancelled) {
@@ -186,7 +219,7 @@ export default function EditPostScreen() {
       setMediaItems(prev => mergeMediaItems(appendMedia ? (draftMediaItems ?? prev) : [], incomingItems));
 
       if (appendMedia) {
-        await AsyncStorage.removeItem(getEditPostDraftKey(id)).catch((error) => {
+        await secureDraftStorage.removeItem(getEditPostDraftKey(id)).catch((error) => {
           console.error('Error clearing edit post draft:', error);
         });
       }
@@ -199,39 +232,71 @@ export default function EditPostScreen() {
     };
   }, [id, initialLoading, params.selectedMedia, params.mediaTypes, params.appendMedia]);
 
-  const loadCustomCategories = async () => {
+  const loadCustomCategories = async (storeId: string | null) => {
     try {
-      const stored = await AsyncStorage.getItem(CUSTOM_CATEGORIES_KEY);
-      if (stored) {
-        setCustomCategories(JSON.parse(stored));
+      if (!storeId) {
+        setCustomCategories([]);
+        return;
       }
+
+      const [stored, legacyStored] = await Promise.all([
+        AsyncStorage.getItem(getStoreCustomCategoriesKey(storeId)),
+        AsyncStorage.getItem(getLegacyStoreCustomCategoriesKey(storeId)),
+      ]);
+      setCustomCategories(uniqueCategories([
+        ...parseStoredCategories(stored),
+        ...parseStoredCategories(legacyStored),
+      ]));
     } catch (error) {
       console.error('Error loading custom categories:', error);
     }
   };
 
+  const resolveActiveStoreId = async () => {
+    if (activeStoreId) return activeStoreId;
+
+    const { data: { user } } = await authService.getCurrentUser();
+    if (!user) return null;
+
+    const storeId = await storeService.getActiveStoreId(user.id);
+    setActiveStoreId(storeId);
+    if (storeId) await loadCustomCategories(storeId);
+    return storeId;
+  };
+
   const saveCustomCategory = async (category: string) => {
     try {
-      const updated = [...customCategories, category];
-      await AsyncStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(updated));
+      const storeId = await resolveActiveStoreId();
+      if (!storeId) {
+        Alert.alert('エラー', '店舗情報を取得できませんでした。');
+        return false;
+      }
+
+      const updated = uniqueCategories([...customCategories, category]);
+      await AsyncStorage.setItem(getStoreCustomCategoriesKey(storeId), JSON.stringify(updated));
       setCustomCategories(updated);
+      return true;
     } catch (error) {
       console.error('Error saving custom category:', error);
+      Alert.alert('エラー', 'カテゴリの保存に失敗しました。');
+      return false;
     }
   };
 
   const handleAddCategory = async () => {
-    const trimmed = newCategoryName.trim();
+    const trimmed = normalizeCategory(newCategoryName);
     if (!trimmed) {
       Alert.alert('エラー', 'カテゴリ名を入力してください。');
       return;
     }
-    const allCategories = [...DEFAULT_MENU_CATEGORIES, ...customCategories];
+    const allCategories = [...DEFAULT_MENU_CATEGORIES, ...customCategories].map(normalizeCategory);
     if (allCategories.includes(trimmed)) {
       Alert.alert('エラー', 'このカテゴリは既に存在します。');
       return;
     }
-    await saveCustomCategory(trimmed);
+    const saved = await saveCustomCategory(trimmed);
+    if (!saved) return;
+
     setSelectedCategories(prev => [...prev, trimmed]);
     setNewCategoryName('');
     setShowAddCategoryModal(false);
@@ -263,8 +328,17 @@ export default function EditPostScreen() {
           onPress: async () => {
             try {
               // カスタムカテゴリから削除
-              const updated = customCategories.filter(c => c !== category);
-              await AsyncStorage.setItem(CUSTOM_CATEGORIES_KEY, JSON.stringify(updated));
+              const storeId = await resolveActiveStoreId();
+              if (!storeId) {
+                Alert.alert('エラー', '店舗情報を取得できませんでした。');
+                return;
+              }
+
+              const updated = customCategories.filter(c => normalizeCategory(c) !== normalizeCategory(category));
+              await Promise.all([
+                AsyncStorage.setItem(getStoreCustomCategoriesKey(storeId), JSON.stringify(updated)),
+                AsyncStorage.setItem(getLegacyStoreCustomCategoriesKey(storeId), JSON.stringify(updated)),
+              ]);
               setCustomCategories(updated);
               // 選択中の場合は選択解除
               setSelectedCategories(prev => prev.filter(c => c !== category));
@@ -314,6 +388,14 @@ export default function EditPostScreen() {
         );
         setInitialLoading(false);
         return;
+      }
+
+      const postStoreId = postWithMedia.store_id ?? null;
+      if (postStoreId) {
+        setActiveStoreId(postStoreId);
+        await loadCustomCategories(postStoreId);
+      } else {
+        await resolveActiveStoreId();
       }
 
       const ownerId = userId ?? currentUserId;
@@ -372,6 +454,10 @@ export default function EditPostScreen() {
       }
 
       setMediaItems(mediaItems);
+      initialMediaItemsRef.current = mediaItems;
+      initialRemoteMediaUrlsRef.current = mediaItems
+        .map(item => item.uri)
+        .filter(uri => uri.startsWith('https://') || uri.startsWith('http://'));
       setInitialLoading(false);
 
     } catch (error: any) {
@@ -408,7 +494,7 @@ export default function EditPostScreen() {
     };
 
     try {
-      await AsyncStorage.setItem(getEditPostDraftKey(id), JSON.stringify(draft));
+      await secureDraftStorage.setItem(getEditPostDraftKey(id), JSON.stringify(draft));
     } catch (error) {
       console.error('Error saving edit post draft:', error);
     }
@@ -483,6 +569,8 @@ export default function EditPostScreen() {
     if (!validateForm()) return;
 
     setLoading(true);
+    const newlyUploadedUrls: string[] = [];
+    let mediaRowsUpdated = false;
     try {
       const { data: { user } } = await authService.getCurrentUser();
       if (!user) {
@@ -495,19 +583,32 @@ export default function EditPostScreen() {
       const uploadedMediaItems = await Promise.all(
         mediaItems.map(async (item) => {
           if (item.uri.startsWith('file://') || item.uri.startsWith('content://')) {
-            try {
-              const uploadedUrl = await fileStorageService.uploadPostImage(user.id, item.uri, id as string);
-              return { ...item, uri: uploadedUrl };
-            } catch (uploadError) {
-              console.warn('Failed to upload media, using original URI:', uploadError);
-              return item;
-            }
+            const uploadedUrl = await fileStorageService.uploadPostImage(
+              user.id,
+              item.uri,
+              id as string,
+              item.type
+            );
+            newlyUploadedUrls.push(uploadedUrl);
+            return { ...item, uri: uploadedUrl };
           }
           return item;
         })
       );
 
       const menuNameWithCategories = buildPostMenuName(formData.memo, selectedCategories);
+
+      const postMediaItems = uploadedMediaItems.map((item, index) => ({
+        media_url: item.uri,
+        is_video: item.type === 'video',
+        display_order: index,
+      }));
+
+      const savedMediaItems = await postService.setPostMedia(id as string, postMediaItems);
+      if (savedMediaItems.length !== postMediaItems.length) {
+        throw new Error('メディア情報の更新に失敗しました。');
+      }
+      mediaRowsUpdated = true;
 
       await postService.updatePost(id as string, {
         title: formData.title || '無題',
@@ -516,13 +617,12 @@ export default function EditPostScreen() {
         is_video: uploadedMediaItems.length > 0 ? uploadedMediaItems[0].type === 'video' : false,
       });
 
-      const postMediaItems = uploadedMediaItems.map((item, index) => ({
-        media_url: item.uri,
-        is_video: item.type === 'video',
-        display_order: index,
-      }));
-
-      await postService.setPostMedia(id as string, postMediaItems);
+      const finalRemoteUrls = new Set(uploadedMediaItems.map(item => item.uri));
+      const removedMediaUrls = initialRemoteMediaUrlsRef.current.filter(url => !finalRemoteUrls.has(url));
+      await fileStorageService.deletePostMedia(removedMediaUrls).catch((storageError) => {
+        console.warn('Post updated, but removed Storage files could not be deleted:', storageError);
+      });
+      initialRemoteMediaUrlsRef.current = [...finalRemoteUrls];
 
       Alert.alert(
         '更新完了',
@@ -531,7 +631,7 @@ export default function EditPostScreen() {
           text: 'OK',
           onPress: async () => {
             if (id) {
-              await AsyncStorage.removeItem(getEditPostDraftKey(id)).catch(() => {});
+              await secureDraftStorage.removeItem(getEditPostDraftKey(id)).catch(() => {});
             }
             router.back();
           },
@@ -539,6 +639,23 @@ export default function EditPostScreen() {
       );
     } catch (error) {
       console.error('Error updating post:', error);
+
+      const originalMediaItems = initialMediaItemsRef.current.map((item, index) => ({
+        media_url: item.uri,
+        is_video: item.type === 'video',
+        display_order: index,
+      }));
+      let restored = !mediaRowsUpdated;
+
+      if (id && originalMediaItems.length > 0) {
+        const restoredItems = await postService.setPostMedia(id, originalMediaItems).catch(() => []);
+        restored = restoredItems.length === originalMediaItems.length;
+      }
+
+      if (restored) {
+        await fileStorageService.deletePostMedia(newlyUploadedUrls).catch(() => {});
+      }
+
       Alert.alert('エラー', '投稿の更新に失敗しました。');
     } finally {
       setLoading(false);
@@ -624,7 +741,7 @@ export default function EditPostScreen() {
         styles.mediaActionIcon,
         variant === 'photo' ? styles.mediaActionIconPhoto : styles.mediaActionIconAlbum,
       ]}>
-        <Ionicons name={icon} size={24} color="#111827" />
+        <Ionicons name={icon} size={24} color="#2196F3" />
       </View>
       <Text style={styles.mediaActionLabel}>{label}</Text>
     </TouchableOpacity>
@@ -649,7 +766,7 @@ export default function EditPostScreen() {
         accessibilityRole="button"
         accessibilityState={{ selected }}
       >
-        <Ionicons name={icon} size={18} color={selected ? '#2563EB' : '#111827'} />
+        <Ionicons name={icon} size={18} color={selected ? '#2196F3' : '#111827'} />
         <Text style={[styles.categoryPillText, selected && styles.categoryPillTextSelected]}>
           {category}
         </Text>
@@ -714,7 +831,7 @@ export default function EditPostScreen() {
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleGroup}>
                 <View style={styles.sectionIconBox}>
-                  <Ionicons name="image-outline" size={22} color="#4F6AF2" />
+                  <Ionicons name="image-outline" size={22} color="#2196F3" />
                 </View>
                 <Text style={[styles.sectionTitle, { color: colors.text }]}>メディア</Text>
                 <View style={styles.countBadge}>
@@ -740,7 +857,7 @@ export default function EditPostScreen() {
               }
             />
             <View style={styles.mediaHelpRow}>
-              <Ionicons name="sparkles-outline" size={16} color="#4F6AF2" />
+              <Ionicons name="sparkles-outline" size={16} color="#2196F3" />
               <Text style={[styles.mediaHelpText, { color: colors.textSecondary }]}>
                 最大5枚まで編集できます（写真・動画どちらも可）
               </Text>
@@ -751,7 +868,7 @@ export default function EditPostScreen() {
           <View style={[styles.section, { backgroundColor: colors.surface }]}>
             <View style={[styles.sectionTitleGroup, styles.formTitleGroup]}>
               <View style={styles.sectionIconBox}>
-                <Ionicons name="document-text-outline" size={22} color="#4F6AF2" />
+                <Ionicons name="document-text-outline" size={22} color="#2196F3" />
               </View>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>投稿内容</Text>
             </View>
@@ -817,7 +934,7 @@ export default function EditPostScreen() {
                   onPress={() => setShowAddCategoryModal(true)}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="add" size={19} color="#4F6AF2" />
+                  <Ionicons name="add" size={19} color="#2196F3" />
                   <Text style={styles.addCategoryText}>カテゴリを追加</Text>
                 </TouchableOpacity>
               </View>
@@ -957,7 +1074,7 @@ const styles = StyleSheet.create({
   submitButton: {
     borderRadius: 20,
     overflow: 'hidden',
-    shadowColor: '#2563EB',
+    shadowColor: '#2196F3',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.24,
     shadowRadius: 18,
@@ -1091,7 +1208,7 @@ const styles = StyleSheet.create({
     width: MEDIA_ITEM_SIZE,
     height: MEDIA_ITEM_SIZE,
     borderWidth: 1.5,
-    borderColor: '#D8E0F5',
+    borderColor: '#2196F3',
     borderStyle: 'dashed',
     borderRadius: 16,
     justifyContent: 'center',
@@ -1113,7 +1230,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1ECFF',
   },
   mediaActionLabel: {
-    color: '#111827',
+    color: '#2196F3',
     fontSize: 13,
     fontWeight: '800',
   },
@@ -1154,7 +1271,7 @@ const styles = StyleSheet.create({
   },
   inputContainerFocused: {
     backgroundColor: '#fff',
-    borderColor: '#444444',
+    borderColor: '#2196F3',
   },
   input: {
     paddingVertical: 15,
@@ -1191,7 +1308,7 @@ const styles = StyleSheet.create({
   },
   categoryPillSelected: {
     backgroundColor: '#F8FBFF',
-    borderColor: '#4F6AF2',
+    borderColor: '#2196F3',
   },
   categoryPillText: {
     color: '#111827',
@@ -1199,25 +1316,25 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   categoryPillTextSelected: {
-    color: '#1D4ED8',
+    color: '#2196F3',
   },
   customCategoryButton: {
     borderStyle: 'dashed',
   },
   addCategoryButton: {
     borderStyle: 'dashed',
-    borderColor: '#D8E0F5',
+    borderColor: '#2196F3',
     backgroundColor: '#FBFCFF',
   },
   addCategoryText: {
-    color: '#4F6AF2',
+    color: '#2196F3',
     fontSize: 14,
     fontWeight: '800',
   },
   deleteButton: {
     minHeight: 50,
     borderRadius: 18,
-    backgroundColor: '#EF4444',
+    backgroundColor: '#2196F3',
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1264,7 +1381,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1F5F9',
   },
   modalAddButton: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#2196F3',
   },
   modalCancelText: {
     color: '#64748B',

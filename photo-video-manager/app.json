@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SnapWork",
+    "name": "SalonCloud",
     "slug": "photo-video-manager",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,8 +12,11 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.kawa5188.snapwork",
       "infoPlist": {
+        "CFBundleDisplayName": "SalonCloud",
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocationWhenInUseUsageDescription": "撮影した写真・動画に位置情報を付加するために使用します。"
+        "NSLocationWhenInUseUsageDescription": "撮影した写真・動画に位置情報を付加するために使用します。",
+        "NSCameraUsageDescription": "SalonCloudで写真や動画を撮影するため、カメラへのアクセスを使用します。",
+        "NSMicrophoneUsageDescription": "SalonCloudで音声付き動画を撮影するため、マイクへのアクセスを使用します。"
       }
     },
     "android": {
@@ -24,7 +27,19 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO"
       ]
     },
     "web": {
@@ -37,17 +52,36 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera",
-          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone",
+          "cameraPermission": "SalonCloudで写真や動画を撮影するため、カメラへのアクセスを使用します。",
+          "microphonePermission": "SalonCloudで音声付き動画を撮影するため、マイクへのアクセスを使用します。",
           "recordAudioAndroid": true
         }
       ],
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "$(PRODUCT_NAME) がカメラを使用します。",
+          "cameraPermissionText": "SalonCloudで写真や動画を撮影するため、カメラへのアクセスを使用します。",
           "enableMicrophonePermission": true,
-          "microphonePermissionText": "$(PRODUCT_NAME) がマイクを使用します。"
+          "microphonePermissionText": "SalonCloudで音声付き動画を撮影するため、マイクへのアクセスを使用します。"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "SalonCloudで投稿する写真や動画を選択するため、写真ライブラリへのアクセスを使用します。",
+          "cameraPermission": "SalonCloudで写真や動画を撮影するため、カメラへのアクセスを使用します。",
+          "microphonePermission": "SalonCloudで音声付き動画を撮影するため、マイクへのアクセスを使用します。"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "SalonCloudで写真や動画を表示・選択するため、写真ライブラリへのアクセスを使用します。",
+          "savePhotosPermission": "SalonCloudの写真や動画を端末へ保存するため、写真ライブラリへの追加を使用します。",
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
         }
       ],
       [
@@ -60,7 +94,8 @@
         }
       ],
       "expo-web-browser",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true
@@ -71,6 +106,12 @@
         "projectId": "47c51392-875e-48bc-8aae-b8050c25d56a"
       }
     },
-    "owner": "kawa5188"
+    "owner": "kawa5188",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/47c51392-875e-48bc-8aae-b8050c25d56a"
+    }
   }
 }

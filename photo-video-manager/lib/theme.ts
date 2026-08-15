@@ -2,14 +2,14 @@
 
 export const colors = {
   // Primary colors
-  primary: '#444444',
-  primaryLight: '#333333',
-  primaryDark: '#000000',
+  primary: '#2196F3',
+  primaryLight: '#42A5F5',
+  primaryDark: '#1976D2',
 
   // Accent colors
-  accent: '#007AFF',
-  accentLight: '#4DA3FF',
-  accentDark: '#0056B3',
+  accent: '#2196F3',
+  accentLight: '#64B5F6',
+  accentDark: '#1976D2',
 
   // Gradient colors
   gradientStart: '#667eea',
@@ -214,7 +214,7 @@ export const buttons = {
         borderWidth: 0,
       },
       text: {
-        color: colors.textPrimary,
+        color: colors.primary,
         fontWeight: '600' as const,
       },
       disabled: {
@@ -225,10 +225,10 @@ export const buttons = {
       container: {
         backgroundColor: 'transparent',
         borderWidth: 1.5,
-        borderColor: colors.borderStrong,
+        borderColor: colors.primary,
       },
       text: {
-        color: colors.textPrimary,
+        color: colors.primary,
         fontWeight: '500' as const,
       },
       disabled: {
@@ -237,12 +237,12 @@ export const buttons = {
     },
     danger: {
       container: {
-        backgroundColor: '#FFF5F5',
+        backgroundColor: colors.primary,
         borderWidth: 1,
-        borderColor: '#FFE5E5',
+        borderColor: colors.primary,
       },
       text: {
-        color: colors.error,
+        color: colors.textLight,
         fontWeight: '600' as const,
       },
       disabled: {
@@ -256,7 +256,7 @@ export const buttons = {
         borderWidth: 0,
       },
       text: {
-        color: colors.textSecondary,
+        color: colors.primary,
         fontWeight: '500' as const,
       },
       disabled: {

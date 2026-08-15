@@ -21,6 +21,17 @@
 2. `schema.sql`ファイルの内容をコピー&ペースト
 3. 「Run」ボタンをクリックしてスキーマを実行
 
+店舗機能を使う場合は、続けて以下のSQLも順番に実行してください。
+
+1. `store_phase1.sql`
+2. `store_posts_phase2.sql`
+3. `store_member_admin.sql`
+4. `restrict_store_invite_code.sql`
+5. `store_owner_additional_store.sql`
+6. `secure_store_invite_codes.sql`
+7. `private_storage_helpers.sql` (signed URL対応アプリのデプロイ後)
+8. `private_storage_policy_ui_setup.md` に従ってStorageポリシーを設定
+
 ### 4. 環境変数の設定
 1. Supabaseダッシュボードで「Settings」→「API」を選択
 2. 以下の値をコピー：

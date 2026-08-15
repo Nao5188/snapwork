@@ -58,15 +58,7 @@ export default function JoinStoreScreen() {
           return;
         }
 
-        const hasMembership = await storeService.hasMembership(user.id);
-        if (!mounted) return;
-
-        if (hasMembership) {
-          router.replace('/(tabs)/history');
-          return;
-        }
-
-        setChecking(false);
+        if (mounted) setChecking(false);
       } catch (guardError) {
         console.warn('Failed to verify join store state:', guardError);
         if (mounted) setChecking(false);
@@ -101,7 +93,7 @@ export default function JoinStoreScreen() {
 
       await storeService.joinStore(user.id, normalizedCode);
       successFeedback();
-      Alert.alert('参加しました', '店舗メンバーとして登録されました。', [
+      Alert.alert('参加しました', '参加した店舗へ切り替えました。', [
         {
           text: 'OK',
           onPress: () => router.replace('/(tabs)/history'),

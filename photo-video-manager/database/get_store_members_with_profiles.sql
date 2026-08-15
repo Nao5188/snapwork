@@ -37,7 +37,13 @@ AS $$
       WHERE viewer.store_id = sm.store_id
         AND viewer.user_id = auth.uid()
     )
-  ORDER BY sm.created_at ASC;
+  ORDER BY
+    CASE
+      WHEN sm.role = 'owner' THEN 0
+      WHEN sm.role = 'admin' THEN 1
+      ELSE 2
+    END,
+    sm.created_at ASC;
 $$;
 
 REVOKE ALL ON FUNCTION public.get_store_members_with_profiles(uuid) FROM PUBLIC;
